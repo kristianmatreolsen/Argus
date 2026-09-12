@@ -24,6 +24,7 @@ public partial class SettingsWindow : Window
         SystemCheckBox.IsChecked = settings.ShowSystem;
         DevicesCheckBox.IsChecked = settings.ShowDevices;
         TrayBatteriesCheckBox.IsChecked = settings.ShowDeviceBatteriesInTray;
+        StartWithWindowsCheckBox.IsChecked = settings.StartWithWindows;
 
         foreach (var checkBox in new[]
         {
@@ -37,7 +38,8 @@ public partial class SettingsWindow : Window
             FanSpeedCheckBox,
             SystemCheckBox,
             DevicesCheckBox,
-            TrayBatteriesCheckBox
+            TrayBatteriesCheckBox,
+            StartWithWindowsCheckBox
         })
         {
             checkBox.Checked += (_, _) => UpdateSettings();
@@ -58,6 +60,7 @@ public partial class SettingsWindow : Window
         settings.ShowSystem = SystemCheckBox.IsChecked == true;
         settings.ShowDevices = DevicesCheckBox.IsChecked == true;
         settings.ShowDeviceBatteriesInTray = TrayBatteriesCheckBox.IsChecked == true;
+        settings.StartWithWindows = StartWithWindowsCheckBox.IsChecked == true;
         SettingsChanged?.Invoke();
     }
 

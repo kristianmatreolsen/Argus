@@ -33,7 +33,10 @@
   - Real-time battery levels for connected Bluetooth HID devices and supported wireless peripherals.
   - Color-coded battery badges (Green `> 50%`, Amber `20–50%`, Red `< 20%`).
 
-- **🛡️ 100% Local & Privacy-Focused**:
+- **� Optional Windows Auto-Start**:
+  - Toggle "Start Argus on Windows startup" in the settings menu to automatically launch Argus upon logging into Windows.
+
+- **�🛡️ 100% Local & Privacy-Focused**:
   - Zero external network requests, zero telemetry tracking, and zero cloud dependencies.
   - Runs completely offline on your local machine.
 

@@ -26,11 +26,13 @@ public sealed class DisplaySettingsService
     {
         try
         {
-            return JsonSerializer.Deserialize<DisplaySettings>(File.ReadAllText(settingsPath)) ?? new DisplaySettings();
+            DisplaySettings settings = JsonSerializer.Deserialize<DisplaySettings>(File.ReadAllText(settingsPath)) ?? new DisplaySettings();
+            settings.StartWithWindows = StartupService.IsStartupEnabled();
+            return settings;
         }
         catch (Exception)
         {
-            return new DisplaySettings();
+            return new DisplaySettings { StartWithWindows = StartupService.IsStartupEnabled() };
         }
     }
 
@@ -43,5 +45,6 @@ public sealed class DisplaySettingsService
         }
 
         File.WriteAllText(settingsPath, JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true }));
+        StartupService.SetStartup(settings.StartWithWindows);
     }
 }

@@ -13,6 +13,7 @@ public sealed class DisplaySettings
     public bool ShowSystem { get; set; } = true;
     public bool ShowDevices { get; set; } = true;
     public bool ShowDeviceBatteriesInTray { get; set; } = true;
+    public bool StartWithWindows { get; set; } = false;
 
     public List<string> SectionOrder { get; set; } = new() { "MetricsSection", "SystemSection", "DevicesSection" };
     public List<string> CardOrder { get; set; } = new()

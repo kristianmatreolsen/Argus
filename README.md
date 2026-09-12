@@ -1,4 +1,7 @@
-# 👁️ Argus
+<p align="left">
+  <img src="logo.png" width="48" height="48" alt="Argus Logo" align="center" />
+  <span style="font-size: 28px; font-weight: bold; margin-left: 10px;">Argus</span>
+</p>
 
 **Argus** is a modern, lightweight Windows system monitoring dashboard that sits quietly in your notification area (system tray). Named after the all-seeing hundred-eyed giant of Greek mythology, Argus provides real-time hardware telemetry, Grafana-style time-series trend graphs, storage health, and peripheral battery status—all packed into a sleek dark UI.
 
@@ -33,7 +36,7 @@
   - Real-time battery levels for connected Bluetooth HID devices and supported wireless peripherals.
   - Color-coded battery badges (Green `> 50%`, Amber `20–50%`, Red `< 20%`).
 
-- **� Optional Windows Auto-Start**:
+- **🚀 Optional Windows Auto-Start**:
   - Toggle "Start Argus on Windows startup" in the settings menu to automatically launch Argus upon logging into Windows.
 
 - **�🛡️ 100% Local & Privacy-Focused**:

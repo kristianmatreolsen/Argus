@@ -44,15 +44,21 @@
 | Requirement | Details |
 | :--- | :--- |
 | **Operating System** | Windows 10 / Windows 11 (64-bit) |
-| **Runtime (Users)** | [.NET 8.0 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) |
+| **Users (Standalone Executable)** | **No runtime installation needed!** Download and run `Argus.exe`. |
 | **SDK (Developers)** | [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) |
 | **Permissions** | Standard user mode (*Administrator mode recommended for direct CPU MSR hardware temperature sensors*). |
 
 ---
 
-## 🚀 Installation & Running
+## 🚀 Download & Installation
 
-### Building from Source
+### Option 1: Standalone Single-File Executable (Recommended for Users)
+1. Download `Argus.exe` from the latest [GitHub Releases](https://github.com/kristianmatreolsen/Argus/releases).
+2. Double-click `Argus.exe` to run. **No installation or .NET runtime setup required!**
+
+---
+
+### Option 2: Building from Source (Developers)
 
 1. Clone the repository:
    ```powershell
@@ -60,16 +66,17 @@
    cd Argus
    ```
 
-2. Restore dependencies and build the solution:
+2. Restore dependencies and run the application:
    ```powershell
    dotnet restore
-   dotnet build Argus.sln -c Release
-   ```
-
-3. Run the application:
-   ```powershell
    dotnet run --project src/Argus/Argus.csproj
    ```
+
+3. Build a standalone `.exe` locally:
+   ```powershell
+   dotnet publish src/Argus/Argus.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o publish/
+   ```
+   *The output single-file `Argus.exe` will be located inside the `publish/` directory.*
 
 ---
 

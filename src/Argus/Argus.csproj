@@ -8,6 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Argus</AssemblyName>
     <RootNamespace>Argus</RootNamespace>
+    <ApplicationIcon>ArgusIcon.ico</ApplicationIcon>
     <Platforms>AnyCPU</Platforms>
 
     <!-- Standalone Single-File Executable Publish Settings -->

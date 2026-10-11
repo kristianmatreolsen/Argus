@@ -85,7 +85,18 @@ public partial class App : Application
             return;
         }
 
-        displaySettingsService.Save(displaySettings);
+        bool startupUpdated = displaySettingsService.Save(displaySettings);
+        if (!startupUpdated)
+        {
+            settingsWindow?.SetStartWithWindows(displaySettings.StartWithWindows);
+            MessageBox.Show(
+                settingsWindow,
+                "Windows could not update Argus startup registration. The current startup setting was kept.",
+                "Argus Startup",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+
         mainWindow?.ApplyDisplaySettings();
     }
 

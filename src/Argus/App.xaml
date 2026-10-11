@@ -4,14 +4,6 @@
              xmlns:tb="http://www.hardcodet.net/taskbar"
              ShutdownMode="OnExplicitShutdown">
     <Application.Resources>
-        <!-- Color Brushes -->
-        <SolidColorBrush x:Key="WindowBackgroundBrush" Color="#0F172A" />
-        <SolidColorBrush x:Key="CardBackgroundBrush" Color="#1E293B" />
-        <SolidColorBrush x:Key="CardBorderBrush" Color="#334155" />
-        <SolidColorBrush x:Key="TextPrimaryBrush" Color="#F8FAFC" />
-        <SolidColorBrush x:Key="TextMutedBrush" Color="#94A3B8" />
-        <SolidColorBrush x:Key="AccentBrush" Color="#38BDF8" />
-
         <DrawingImage x:Key="ArgusLogoSource">
             <DrawingImage.Drawing>
                 <DrawingGroup>

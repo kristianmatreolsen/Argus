@@ -6,6 +6,7 @@ namespace Argus;
 public partial class SettingsWindow : Window
 {
     private readonly DisplaySettings settings;
+    private bool updatingStartupCheckBox;
 
     public event Action? SettingsChanged;
 
@@ -49,6 +50,11 @@ public partial class SettingsWindow : Window
 
     private void UpdateSettings()
     {
+        if (updatingStartupCheckBox)
+        {
+            return;
+        }
+
         settings.ShowGpuTemperature = GpuTemperatureCheckBox.IsChecked == true;
         settings.ShowGpuLoad = GpuLoadCheckBox.IsChecked == true;
         settings.ShowCpuTemperature = CpuTemperatureCheckBox.IsChecked == true;
@@ -62,6 +68,13 @@ public partial class SettingsWindow : Window
         settings.ShowDeviceBatteriesInTray = TrayBatteriesCheckBox.IsChecked == true;
         settings.StartWithWindows = StartWithWindowsCheckBox.IsChecked == true;
         SettingsChanged?.Invoke();
+    }
+
+    public void SetStartWithWindows(bool enabled)
+    {
+        updatingStartupCheckBox = true;
+        StartWithWindowsCheckBox.IsChecked = enabled;
+        updatingStartupCheckBox = false;
     }
 
     private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();

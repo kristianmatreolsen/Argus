@@ -42,8 +42,6 @@ public partial class MainWindow : Window
     private readonly List<double> memoryHistory = new();
     private readonly List<double> downloadHistory = new();
     private readonly List<double> uploadHistory = new();
-    private readonly List<double> fpsHistory = new();
-    private readonly List<double> fanHistory = new();
 
     public event Action<string>? TelemetryUpdated;
     public string CurrentTelemetry { get; private set; } = "Argus";
@@ -147,7 +145,7 @@ public partial class MainWindow : Window
             batteryRefreshedAtUtc = now;
         }
 
-        return new TelemetrySnapshot(hardware, cachedDevices, cachedSystem!);
+        return new TelemetrySnapshot(hardware, cachedDevices, cachedSystem);
     }
 
     private void ApplySnapshot(TelemetrySnapshot snapshot)
@@ -173,11 +171,13 @@ public partial class MainWindow : Window
         CpuTempText.Text = FormatMetric(hardware.CpuTemperature, "°C");
         CpuTemperatureCard.ToolTip = hardware.CpuTemperature.HasValue
             ? $"CPU Package Temperature: {hardware.CpuTemperature.Value:0}°C"
-            : "CPU Temperature: Admin Access Required or Sensor Unavailable";
+            : "CPU Temperature: Sensor Unavailable";
 
         // CPU LOAD
         CpuUsageText.Text = FormatMetric(hardware.CpuUsage, "%");
-        CpuLoadCard.ToolTip = $"CPU Total Utilization: {hardware.CpuUsage:0}%";
+        CpuLoadCard.ToolTip = hardware.CpuUsage.HasValue
+            ? $"CPU Total Utilization: {hardware.CpuUsage.Value:0}%"
+            : "CPU Utilization: Sensor Unavailable";
 
         // MEMORY
         MemoryUsageText.Text = FormatMetric(hardware.MemoryUsagePercent, "%");
@@ -189,24 +189,34 @@ public partial class MainWindow : Window
         string linkSpeedStr = hardware.NetworkLinkSpeedText ?? "Active Network Adapter";
         NetworkCard.ToolTip = $"Network Connection • Link Capacity: {linkSpeedStr}\n↓ Download: {FormatRate(hardware.DownloadKilobytesPerSecond, "KB/s")}\n↑ Upload: {FormatRate(hardware.UploadKilobytesPerSecond, "KB/s")}";
 
-        // FPS & FAN
-        FpsText.Text = hardware.Fps.HasValue && hardware.Fps.Value > 0 ? $"{hardware.Fps.Value:0} FPS" : "-- FPS";
+        // FPS
+        FpsText.Text = hardware.Fps.HasValue ? $"{hardware.Fps.Value:0} FPS" : "0 FPS";
         FpsCard.ToolTip = hardware.Fps.HasValue && hardware.Fps.Value > 0
-            ? $"3D Render Speed: {hardware.Fps.Value:0} FPS"
-            : "Frames Per Second: No active 3D application detected";
+            ? $"Dynamic 3D Render FPS: {hardware.Fps.Value:0} FPS"
+            : "Dynamic FPS: 0 FPS. No displayed frames are currently being detected.";
 
-        if (hardware.Fans.Count > 0)
+        // FAN SPEED
+        if (hardware.Fans.Count > 1)
         {
-            FanText.Text = $"{hardware.Fans[0].Rpm:0} RPM";
-            string fanDetails = string.Join("\n", hardware.Fans.Select(f => $"• {f.Name}: {f.Rpm:0} RPM"));
+            FanText.Visibility = Visibility.Collapsed;
+            FansList.ItemsSource = hardware.Fans;
+            FansScroll.Visibility = Visibility.Visible;
+            string fanDetails = string.Join("\n", hardware.Fans.Select(f => $"• {f.Name}: {f.Rpm:0} {f.Unit}"));
             FanSpeedCard.ToolTip = $"System Fans Detected ({hardware.Fans.Count}):\n{fanDetails}";
+        }
+        else if (hardware.Fans.Count == 1)
+        {
+            FansScroll.Visibility = Visibility.Collapsed;
+            FanText.Visibility = Visibility.Visible;
+            FanText.Text = $"{hardware.Fans[0].Rpm:0} {hardware.Fans[0].Unit}";
+            FanSpeedCard.ToolTip = $"System Fan: {hardware.Fans[0].Name} ({hardware.Fans[0].Rpm:0} {hardware.Fans[0].Unit})";
         }
         else
         {
-            FanText.Text = FormatFan(hardware.FanRpm);
-            FanSpeedCard.ToolTip = hardware.FanRpm.HasValue
-                ? $"Cooling Fan Speed: {hardware.FanRpm.Value:0} RPM"
-                : "Fan Speed: Sensor Unavailable";
+            FansScroll.Visibility = Visibility.Collapsed;
+            FanText.Visibility = Visibility.Visible;
+            FanText.Text = "No active RPM";
+            FanSpeedCard.ToolTip = "No fan tachometer is currently reporting a non-zero RPM value.";
         }
 
         // SYSTEM & DEVICES
@@ -219,12 +229,13 @@ public partial class MainWindow : Window
         AddHistoryPoint(gpuTempHistory, hardware.GpuTemperature ?? 0);
         AddHistoryPoint(gpuLoadHistory, hardware.GpuUsage ?? 0);
         AddHistoryPoint(cpuTempHistory, hardware.CpuTemperature ?? 0);
-        AddHistoryPoint(cpuLoadHistory, hardware.CpuUsage);
+        if (hardware.CpuUsage.HasValue)
+        {
+            AddHistoryPoint(cpuLoadHistory, hardware.CpuUsage.Value);
+        }
         AddHistoryPoint(memoryHistory, hardware.MemoryUsagePercent);
         AddHistoryPoint(downloadHistory, hardware.DownloadKilobytesPerSecond);
         AddHistoryPoint(uploadHistory, hardware.UploadKilobytesPerSecond);
-        AddHistoryPoint(fpsHistory, hardware.Fps ?? 0);
-        AddHistoryPoint(fanHistory, hardware.FanRpm ?? 0);
 
         RenderAllSparklines();
 
@@ -506,8 +517,6 @@ public partial class MainWindow : Window
         double currentCpuTemp = cpuTempHistory.Count > 0 ? cpuTempHistory[^1] : 0;
         double currentCpuLoad = cpuLoadHistory.Count > 0 ? cpuLoadHistory[^1] : 0;
         double currentMem = memoryHistory.Count > 0 ? memoryHistory[^1] : 0;
-        double currentFps = fpsHistory.Count > 0 ? fpsHistory[^1] : 0;
-        double currentFan = fanHistory.Count > 0 ? fanHistory[^1] : 0;
 
         var (gpuTempStroke, gpuTempFill) = GetThresholdColors(currentGpuTemp, warningVal: 70, criticalVal: 82);
         var (gpuLoadStroke, gpuLoadFill) = GetThresholdColors(currentGpuLoad, warningVal: 75, criticalVal: 90);
@@ -521,8 +530,6 @@ public partial class MainWindow : Window
         RenderSparkline(CpuLoadSparklineCanvas, cpuLoadHistory, minVal: 0, maxVal: 100, unitLabel: "%", strokeColor: cpuLoadStroke, fillColor: cpuLoadFill, warningThreshold: 75);
         RenderSparkline(MemorySparklineCanvas, memoryHistory, minVal: 0, maxVal: 100, unitLabel: "%", strokeColor: memStroke, fillColor: memFill, warningThreshold: 80);
         RenderDualSparkline(NetworkSparklineCanvas, downloadHistory, uploadHistory, downColor: Color.FromRgb(0x73, 0xBF, 0x69), upColor: Color.FromRgb(0xB8, 0x77, 0xD9));
-        RenderSparkline(FpsSparklineCanvas, fpsHistory, minVal: 0, maxVal: Math.Max(currentFps * 1.25d, 144), unitLabel: " FPS", strokeColor: Color.FromRgb(0x38, 0xBD, 0xF8), fillColor: Color.FromArgb(0x35, 0x38, 0xBD, 0xF8));
-        RenderSparkline(FanSparklineCanvas, fanHistory, minVal: 0, maxVal: Math.Max(currentFan * 1.2d, 2500), unitLabel: " RPM", strokeColor: Color.FromRgb(0x06, 0xB6, 0xD4), fillColor: Color.FromArgb(0x35, 0x06, 0xB6, 0xD4));
     }
 
     private static (Color stroke, Color fill) GetThresholdColors(double currentVal, double warningVal, double criticalVal)
@@ -785,13 +792,6 @@ public partial class MainWindow : Window
     private static string FormatMetric(double? value, string suffix) => value is null ? "--" : $"{value:0}{suffix}";
 
     private static string FormatFan(double? value) => value is null or <= 0 ? "--" : $"{value:0} RPM";
-
-    private static string FormatNetworkSpeed(double downloadKilobytesPerSecond, double uploadKilobytesPerSecond)
-    {
-        string download = FormatRate(downloadKilobytesPerSecond, "KB/s");
-        string upload = FormatRate(uploadKilobytesPerSecond, "KB/s");
-        return $"↓ {download}\n↑ {upload}";
-    }
 
     private static string FormatRate(double value, string unit)
     {

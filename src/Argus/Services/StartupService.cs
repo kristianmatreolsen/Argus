@@ -12,7 +12,21 @@ public static class StartupService
         try
         {
             using RegistryKey? key = Registry.CurrentUser.OpenSubKey(RunRegistryKey, writable: false);
-            return key?.GetValue(AppName) is not null;
+            string? registeredPath = key?.GetValue(AppName)?.ToString()?.Trim().Trim('"');
+            string? currentPath = Environment.ProcessPath;
+            if (string.IsNullOrWhiteSpace(registeredPath) || string.IsNullOrWhiteSpace(currentPath))
+            {
+                return false;
+            }
+
+            if (string.Equals(registeredPath, currentPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            using RegistryKey? writableKey = Registry.CurrentUser.OpenSubKey(RunRegistryKey, writable: true);
+            writableKey?.DeleteValue(AppName, throwOnMissingValue: false);
+            return false;
         }
         catch
         {
@@ -20,32 +34,35 @@ public static class StartupService
         }
     }
 
-    public static void SetStartup(bool enable)
+    public static bool SetStartup(bool enable)
     {
         try
         {
-            using RegistryKey? key = Registry.CurrentUser.OpenSubKey(RunRegistryKey, writable: true);
-            if (key is null)
+            if (!enable)
             {
-                return;
+                using RegistryKey? existingKey = Registry.CurrentUser.OpenSubKey(RunRegistryKey, writable: true);
+                existingKey?.DeleteValue(AppName, throwOnMissingValue: false);
+                return true;
             }
 
-            if (enable)
+            string? exePath = Environment.ProcessPath;
+            if (string.IsNullOrWhiteSpace(exePath))
             {
-                string? exePath = Environment.ProcessPath;
-                if (!string.IsNullOrEmpty(exePath))
-                {
-                    key.SetValue(AppName, $"\"{exePath}\"");
-                }
+                return false;
             }
-            else
+
+            using RegistryKey? key = Registry.CurrentUser.CreateSubKey(RunRegistryKey, writable: true);
+            if (key is null)
             {
-                key.DeleteValue(AppName, false);
+                return false;
             }
+
+            key.SetValue(AppName, $"\"{exePath}\"", RegistryValueKind.String);
+            return true;
         }
         catch
         {
-            // Suppress registry access errors
+            return false;
         }
     }
 }

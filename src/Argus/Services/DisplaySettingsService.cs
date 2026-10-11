@@ -36,8 +36,14 @@ public sealed class DisplaySettingsService
         }
     }
 
-    public void Save(DisplaySettings settings)
+    public bool Save(DisplaySettings settings)
     {
+        bool startupUpdated = StartupService.SetStartup(settings.StartWithWindows);
+        if (!startupUpdated)
+        {
+            settings.StartWithWindows = StartupService.IsStartupEnabled();
+        }
+
         string? directory = Path.GetDirectoryName(settingsPath);
         if (directory is not null)
         {
@@ -45,6 +51,6 @@ public sealed class DisplaySettingsService
         }
 
         File.WriteAllText(settingsPath, JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true }));
-        StartupService.SetStartup(settings.StartWithWindows);
+        return startupUpdated;
     }
 }

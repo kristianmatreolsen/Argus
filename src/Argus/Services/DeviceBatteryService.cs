@@ -15,18 +15,42 @@ public sealed class DeviceBatteryService
     public IReadOnlyList<DeviceBattery> Read()
     {
         var devices = new List<DeviceBattery>();
-        string selector = Battery.GetDeviceSelector();
-        DeviceInformationCollection batteryDevices = DeviceInformation.FindAllAsync(selector).AsTask().GetAwaiter().GetResult();
-
-        foreach (DeviceInformation device in batteryDevices)
+        try
         {
-            TryAddWindowsBattery(devices, device);
+            string selector = Battery.GetDeviceSelector();
+            DeviceInformationCollection batteryDevices = DeviceInformation.FindAllAsync(selector).AsTask().GetAwaiter().GetResult();
+            foreach (DeviceInformation device in batteryDevices)
+            {
+                TryAddWindowsBattery(devices, device);
+            }
+        }
+        catch (Exception)
+        {
         }
 
-        AddPairedBluetoothDevices(devices, BluetoothDevice.GetDeviceSelectorFromPairingState(true));
+        try
+        {
+            AddPairedBluetoothDevices(devices, BluetoothDevice.GetDeviceSelectorFromPairingState(true));
+        }
+        catch (Exception)
+        {
+        }
 
-        ReadBluetoothLeBatteries(devices);
-        ReadSteelSeriesBattery(devices);
+        try
+        {
+            ReadBluetoothLeBatteries(devices);
+        }
+        catch (Exception)
+        {
+        }
+
+        try
+        {
+            ReadSteelSeriesBattery(devices);
+        }
+        catch (Exception)
+        {
+        }
 
         return devices
             .OrderBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
@@ -45,7 +69,7 @@ public sealed class DeviceBatteryService
                 ? (int)Math.Round(remainingCapacity * 100d / fullCapacity)
                 : null;
 
-            AddOrReplaceDevice(devices, new DeviceBattery(GetDisplayName(device.Name, "Windows battery device"), percentage, true, "Connected"));
+            AddOrReplaceDevice(devices, new DeviceBattery(GetDisplayName(device.Name, "Windows battery device"), percentage, "Connected"));
         }
         catch (Exception)
         {
@@ -59,7 +83,7 @@ public sealed class DeviceBatteryService
         foreach (DeviceInformation device in pairedDevices)
         {
             string name = GetDisplayName(device.Name, "Bluetooth device");
-            AddOrReplaceDevice(devices, new DeviceBattery(name, null, true, "Battery unavailable"));
+            AddOrReplaceDevice(devices, new DeviceBattery(name, null, "Battery unavailable"));
         }
     }
 
@@ -120,9 +144,9 @@ public sealed class DeviceBatteryService
                     continue;
                 }
 
-                AddOrReplaceDevice(devices, new DeviceBattery(name, percentage, true, "Connected"));
+                AddOrReplaceDevice(devices, new DeviceBattery(name, percentage, "Connected"));
             }
-            catch (Exception) when (!string.IsNullOrWhiteSpace(deviceInformation.Name))
+            catch (Exception)
             {
                 // Some paired devices deny GATT access or do not expose the battery service.
             }
@@ -142,7 +166,7 @@ public sealed class DeviceBatteryService
             const string name = "SteelSeries Arctis Nova 5";
             if (device.GetMaxFeatureReportLength() < 68)
             {
-                AddOrReplaceDevice(devices, new DeviceBattery(name, null, true, "Battery unavailable"));
+                AddOrReplaceDevice(devices, new DeviceBattery(name, null, "Battery unavailable"));
                 continue;
             }
 
@@ -160,7 +184,7 @@ public sealed class DeviceBatteryService
                     }
 
                     lastVerifiedSteelSeriesBattery = feature[66];
-                    AddOrReplaceDevice(devices, new DeviceBattery(name, feature[66], true, "Connected"));
+                    AddOrReplaceDevice(devices, new DeviceBattery(name, feature[66], "Connected"));
                     return;
                 }
                 catch (Exception)
@@ -170,7 +194,7 @@ public sealed class DeviceBatteryService
             }
 
             string status = lastVerifiedSteelSeriesBattery is null ? "Battery unavailable" : "Last verified";
-            AddOrReplaceDevice(devices, new DeviceBattery(name, lastVerifiedSteelSeriesBattery, true, status));
+            AddOrReplaceDevice(devices, new DeviceBattery(name, lastVerifiedSteelSeriesBattery, status));
             return;
         }
     }

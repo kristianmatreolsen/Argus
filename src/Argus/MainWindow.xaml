@@ -179,8 +179,7 @@
                                 DragOver="Card_DragOver"
                                 Drop="Card_Drop">
                             <Grid>
-                                <Canvas x:Name="FpsSparklineCanvas" ClipToBounds="True" SizeChanged="SparklineCanvas_SizeChanged" VerticalAlignment="Stretch" HorizontalAlignment="Stretch" />
-                                <StackPanel IsHitTestVisible="False">
+                                <StackPanel IsHitTestVisible="False" VerticalAlignment="Center">
                                     <TextBlock Text="FPS" Foreground="#94A3B8" FontSize="10" FontWeight="Bold" />
                                     <TextBlock x:Name="FpsText" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,6,0,0" />
                                 </StackPanel>
@@ -195,10 +194,23 @@
                                 DragOver="Card_DragOver"
                                 Drop="Card_Drop">
                             <Grid>
-                                <Canvas x:Name="FanSparklineCanvas" ClipToBounds="True" SizeChanged="SparklineCanvas_SizeChanged" VerticalAlignment="Stretch" HorizontalAlignment="Stretch" />
-                                <StackPanel IsHitTestVisible="False">
-                                    <TextBlock Text="FAN SPEED" Foreground="#94A3B8" FontSize="10" FontWeight="Bold" />
-                                    <TextBlock x:Name="FanText" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,6,0,0" />
+                                <StackPanel IsHitTestVisible="False" VerticalAlignment="Center">
+                                    <TextBlock Text="FAN SPEED" Foreground="#94A3B8" FontSize="10" FontWeight="Bold" Margin="0,0,0,2" />
+                                    <TextBlock x:Name="FanText" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,2,0,0" />
+                                    <ScrollViewer x:Name="FansScroll" MaxHeight="38" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
+                                        <ItemsControl x:Name="FansList">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock FontSize="9.5" FontWeight="SemiBold" Foreground="#F8FAFC" Margin="0,0">
+                                                        <Run Text="{Binding Name}" Foreground="#94A3B8" FontSize="8.5" />
+                                                        <Run Text=": " Foreground="#64748B" />
+                                                        <Run Text="{Binding Rpm, StringFormat='{}{0:0}'}" FontWeight="Bold" Foreground="#F8FAFC" />
+                                                        <Run Text="{Binding Unit, StringFormat=' {}'}" Foreground="#64748B" FontSize="8" />
+                                                    </TextBlock>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </ScrollViewer>
                                 </StackPanel>
                             </Grid>
                         </Border>

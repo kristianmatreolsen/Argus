@@ -14,7 +14,7 @@
   - **CPU**: Core Package Temperature (`°C`) & Total CPU Utilization (`%`).
   - **Memory**: System RAM utilization (`%`) and physical memory breakdown (`GB used / total`).
   - **Network**: Independent Download (`↓`) and Upload (`↑`) rates with automatic peak bandwidth scaling and network adapter link capacity (e.g. `1 Gbps`, `2.5 Gbps`).
-  - **FPS**: Live 3D renderer framerate tracking via DXGI / Direct3D performance counters.
+  - **FPS**: Best-effort live framerate tracking using supported Windows counters and optional FrameView or PresentMon providers.
   - **Fan Speed**: RPM tracking across all active system, case, and GPU cooling fans.
 
 - **📈 Grafana-Style Time-Series Graphs**:
@@ -39,7 +39,7 @@
 - **🚀 Optional Windows Auto-Start**:
   - Toggle "Start Argus on Windows startup" in the settings menu to automatically launch Argus upon logging into Windows.
 
-- **�🛡️ 100% Local & Privacy-Focused**:
+- **🔒 100% Local & Privacy-Focused**:
   - Zero external network requests, zero telemetry tracking, and zero cloud dependencies.
   - Runs completely offline on your local machine.
 
@@ -52,7 +52,7 @@
 | **Operating System** | Windows 10 / Windows 11 (64-bit) |
 | **Users (Standalone Executable)** | **No runtime installation needed!** Download and run `Argus.exe`. |
 | **SDK (Developers)** | [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) |
-| **Permissions** | Standard user mode (*Administrator mode recommended for direct CPU MSR hardware temperature sensors*). |
+| **Permissions** | Standard user mode. Some hardware sensors may require administrator access or vendor software and may be unavailable otherwise. |
 
 ---
 
@@ -90,11 +90,12 @@
 
 - **Accessing the Dashboard**: Click the Argus eye icon in your Windows taskbar system tray (bottom-right notification area) to pop up the dashboard.
 - **Settings Flyout**: Click the **SETTINGS** button in the top-right corner of the dashboard or right-click the system tray icon and select **Settings**.
-  - Toggle visibility for any of the 10 individual metric cards, system info, or device batteries.
+  - Toggle visibility for metric cards, system information, connected devices, and tray battery details.
+  - Enable **Start Argus on Windows startup** to launch the current executable when the current Windows user signs in. If Windows cannot update the startup registration, Argus keeps the existing setting and shows a warning.
 - **Reordering Elements**:
   - Click and drag any **section header card** up or down to reorder sections.
   - Click and drag any **metric card** to swap positions in the grid.
-- **System Tray Hover**: Hovering over the system tray icon displays a live quick-summary tooltip of your CPU load, Memory, Network traffic, and connected battery statuses.
+- **System Tray Hover**: Hovering over the system tray icon displays a live quick-summary tooltip of your CPU load, Memory, Network traffic, and connected battery statuses. Metrics that the hardware or provider does not expose are shown as unavailable.
 
 ---
 
@@ -113,4 +114,4 @@ Argus was built with security and transparency in mind:
 
 ## 📄 License
 
-Distributed under the MIT License. See `LICENSE` for more information.
+Distributed under the MIT License.

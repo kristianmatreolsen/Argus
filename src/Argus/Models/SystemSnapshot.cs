@@ -2,19 +2,11 @@ using System.Globalization;
 
 namespace Argus.Models;
 
-public sealed record SystemSnapshot(
-    DateTimeOffset CapturedAt,
-    double? CpuTemperature,
-    double? GpuTemperature,
-    double CpuUsage,
-    double MemoryUsage,
-    IReadOnlyList<DeviceBattery> Devices);
+public sealed record FanReading(string Name, double Rpm, string Unit = "RPM");
 
 public sealed record SystemInfo(
     string MachineName,
-    string OperatingSystem,
     string Uptime,
-    string SystemDriveFreeSpace,
     IReadOnlyList<DriveFreeSpace> Drives);
 
 public sealed record DriveFreeSpace(string Name, long FreeSpaceGb, long TotalSizeGb)
@@ -55,7 +47,7 @@ public sealed record DriveFreeSpace(string Name, long FreeSpaceGb, long TotalSiz
     };
 }
 
-public sealed record DeviceBattery(string Name, int? Percentage, bool IsConnected, string Status)
+public sealed record DeviceBattery(string Name, int? Percentage, string Status)
 {
     public string DisplayPercentage => Percentage is int value ? $"{value}%" : "--";
 

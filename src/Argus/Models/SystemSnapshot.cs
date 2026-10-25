@@ -52,6 +52,9 @@ public sealed record DeviceBattery(string Name, int? Percentage, string Status)
 {
     public string DisplayPercentage => Percentage is int value ? $"{value}%" : "--";
 
+    // "Connected" is the normal case, so only unusual states (e.g. "Last verified") are shown.
+    public string StatusText => Status == "Connected" ? string.Empty : Status;
+
     public string PercentageBrush => Percentage switch
     {
         > 50 => "#10B981", // Green

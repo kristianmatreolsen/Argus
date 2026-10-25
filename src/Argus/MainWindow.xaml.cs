@@ -1,6 +1,8 @@
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using System.Windows.Threading;
@@ -15,11 +17,18 @@ public partial class MainWindow : Window
     private readonly DeviceBatteryService deviceBattery;
     private readonly SystemInfoService systemInfo;
     private readonly DisplaySettings settings;
-    private readonly DisplaySettingsService displaySettingsService = new();
+    private readonly DisplaySettingsService displaySettingsService;
     private readonly DispatcherTimer refreshTimer = new() { Interval = TimeSpan.FromSeconds(1) };
+    private readonly DispatcherTimer boundsSaveTimer = new() { Interval = TimeSpan.FromMilliseconds(800) };
+    private const double PopupWidth = 420;
+    private const double PopupHeight = 680;
+    private DateTime hiddenByDeactivationUtc;
     private static readonly TimeSpan BatteryRefreshInterval = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan SystemRefreshInterval = TimeSpan.FromSeconds(30);
     private bool closeFromApplication;
+    private readonly bool pawnIoInstalledAtStartup = SystemCapabilities.IsPawnIoInstalled;
+    private bool sensorAccessBannerDismissed;
+    private SensorAccessAction sensorAccessAction;
     private int refreshInProgress;
     private int batteryRefreshInProgress;
     private volatile IReadOnlyList<DeviceBattery> cachedDevices = Array.Empty<DeviceBattery>();
@@ -37,6 +46,7 @@ public partial class MainWindow : Window
 
     private static readonly Brush PrimaryTextBrush = CreateFrozenBrush(0xF8, 0xFA, 0xFC);
     private static readonly Brush MutedTextBrush = CreateFrozenBrush(0x64, 0x74, 0x8B);
+    private static readonly Brush AccentBrush = CreateFrozenBrush(0x38, 0xBD, 0xF8);
 
     // Warning / critical thresholds. Modern GPUs run 65–80°C under load and current desktop CPUs
     // boost up to ~95°C by design, so lower limits would flag normal gaming sessions.
@@ -58,20 +68,30 @@ public partial class MainWindow : Window
     private readonly List<double> downloadHistory = new();
     private readonly List<double> uploadHistory = new();
 
-    public event Action<string>? TelemetryUpdated;
-    public string CurrentTelemetry { get; private set; } = "Argus";
+    // Raised after every refresh with the values shown on the dashboard (used by the tray tooltip panel).
+    public event Action<HardwareReading, IReadOnlyList<DeviceBattery>>? SnapshotApplied;
 
     // Latest fan readings with their sensor names, used by Settings to offer renaming.
     public IReadOnlyList<FanReading> CurrentFans { get; private set; } = Array.Empty<FanReading>();
 
-    public MainWindow(HardwareMonitorService hardwareMonitor, DeviceBatteryService deviceBattery, SystemInfoService systemInfo, DisplaySettings settings)
+    public MainWindow(
+        HardwareMonitorService hardwareMonitor,
+        DeviceBatteryService deviceBattery,
+        SystemInfoService systemInfo,
+        DisplaySettings settings,
+        DisplaySettingsService displaySettingsService)
     {
         InitializeComponent();
         this.hardwareMonitor = hardwareMonitor;
         this.deviceBattery = deviceBattery;
         this.systemInfo = systemInfo;
         this.settings = settings;
+        this.displaySettingsService = displaySettingsService;
         ApplyDisplaySettings();
+        UpdatePinButton();
+        boundsSaveTimer.Tick += (_, _) => SavePinnedBounds();
+        LocationChanged += (_, _) => QueuePinnedBoundsSave();
+        SizeChanged += (_, _) => QueuePinnedBoundsSave();
         refreshTimer.Tick += async (_, _) => await RefreshAsync();
         _ = RefreshAsync();
         refreshTimer.Start();
@@ -100,14 +120,272 @@ public partial class MainWindow : Window
         ApplyCardOrder();
     }
 
-    public void ShowNearTray()
+    // Tells the user why CPU temperature and motherboard fans show "--" and offers the fix, instead of
+    // leaving the cards silently empty.
+    private void UpdateSensorAccessBanner()
     {
+        if (sensorAccessBannerDismissed)
+        {
+            SensorAccessBanner.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        bool pawnIoInstalled = SystemCapabilities.IsPawnIoInstalled;
+        if (!SystemCapabilities.IsElevated)
+        {
+            ShowSensorAccessBanner("CPU temperature and motherboard fans need administrator rights.", "Restart as admin", SensorAccessAction.RestartElevated);
+        }
+        else if (!pawnIoInstalled)
+        {
+            ShowSensorAccessBanner("CPU temperature and motherboard fans need the free PawnIO driver.", "Get PawnIO", SensorAccessAction.OpenPawnIoSite);
+        }
+        else if (!pawnIoInstalledAtStartup)
+        {
+            ShowSensorAccessBanner("PawnIO is installed. Restart Argus to start reading CPU temperature and fans.", "Restart", SensorAccessAction.RestartElevated);
+        }
+        else
+        {
+            SensorAccessBanner.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void ShowSensorAccessBanner(string message, string buttonText, SensorAccessAction action)
+    {
+        SensorAccessText.Text = message;
+        SensorAccessButton.Content = buttonText;
+        sensorAccessAction = action;
+        SensorAccessBanner.Visibility = Visibility.Visible;
+    }
+
+    private void SensorAccessButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sensorAccessAction == SensorAccessAction.OpenPawnIoSite)
+        {
+            // Open the site through Explorer so the browser doesn't inherit Argus's administrator rights.
+            try
+            {
+                System.Diagnostics.Process.Start("explorer.exe", SystemCapabilities.PawnIoUrl);
+            }
+            catch (Exception)
+            {
+            }
+        }
+        else if (Application.Current is App app)
+        {
+            app.RestartAsAdministrator();
+        }
+    }
+
+    private void DismissSensorAccessBanner_Click(object sender, RoutedEventArgs e)
+    {
+        sensorAccessBannerDismissed = true;
+        SensorAccessBanner.Visibility = Visibility.Collapsed;
+    }
+
+    private enum SensorAccessAction
+    {
+        RestartElevated,
+        OpenPawnIoSite
+    }
+
+    // --- WINDOW MODES ---
+    // Popup (default): opens next to the tray and hides when it loses focus, like Windows' own tray flyouts.
+    // Pinned: stays open where the user put it (e.g. on a second monitor), resizable, bounds remembered.
+
+    public void ShowFromTray()
+    {
+        if (!settings.IsPinned || !TryShowPinned())
+        {
+            ShowNearTray();
+        }
+    }
+
+    // Clicking the tray icon toggles the popup. That click first takes focus from the popup, which hides
+    // it, so a click right after such a hide must not reopen it.
+    public void ToggleFromTray()
+    {
+        if (!settings.IsPinned)
+        {
+            if (IsVisible)
+            {
+                Hide();
+                return;
+            }
+
+            if (DateTime.UtcNow - hiddenByDeactivationUtc < TimeSpan.FromMilliseconds(400))
+            {
+                return;
+            }
+        }
+
+        ShowFromTray();
+    }
+
+    // Opens the dashboard in the corner next to the notification area. The taskbar edge is found by
+    // comparing the primary monitor's work area with its full size: the tray sits at the right end of a
+    // top/bottom taskbar and at the bottom end of a left/right one.
+    private void ShowNearTray()
+    {
+        UpdateSensorAccessBanner();
+        const double margin = 12;
+        Rect workArea = SystemParameters.WorkArea;
+        ResizeMode = settings.IsPinned ? ResizeMode.CanResize : ResizeMode.NoResize;
+        Width = PopupWidth;
+        Height = PopupHeight;
+        MaxHeight = workArea.Height - (margin * 2);
+
         Show();
         UpdateLayout();
-        Left = SystemParameters.WorkArea.Right - ActualWidth - 12;
-        Top = Math.Max(SystemParameters.WorkArea.Top + 12, SystemParameters.WorkArea.Bottom - ActualHeight - 72);
+
+        bool taskbarOnLeft = workArea.Left > 0;
+        bool taskbarOnTop = workArea.Top > 0;
+        Left = taskbarOnLeft ? workArea.Left + margin : workArea.Right - ActualWidth - margin;
+        Top = taskbarOnTop ? workArea.Top + margin : workArea.Bottom - ActualHeight - margin;
         Activate();
     }
+
+    // Returns false when there are no saved bounds or they are no longer on a connected monitor.
+    private bool TryShowPinned()
+    {
+        if (settings.PinnedLeft is not double left || settings.PinnedTop is not double top)
+        {
+            return false;
+        }
+
+        double width = settings.PinnedWidth ?? PopupWidth;
+        double height = settings.PinnedHeight ?? PopupHeight;
+        var virtualScreen = new Rect(
+            SystemParameters.VirtualScreenLeft,
+            SystemParameters.VirtualScreenTop,
+            SystemParameters.VirtualScreenWidth,
+            SystemParameters.VirtualScreenHeight);
+        if (!virtualScreen.Contains(new Point(left + 40, top + 10)) || !virtualScreen.Contains(new Point(left + width - 40, top + 10)))
+        {
+            return false;
+        }
+
+        UpdateSensorAccessBanner();
+        ResizeMode = ResizeMode.CanResize;
+        MaxHeight = double.PositiveInfinity;
+        Left = left;
+        Top = top;
+        Width = width;
+        Height = height;
+        Show();
+        Activate();
+        return true;
+    }
+
+    private void SetPinned(bool pinned)
+    {
+        settings.IsPinned = pinned;
+        UpdatePinButton();
+        if (pinned)
+        {
+            ResizeMode = ResizeMode.CanResize;
+            MaxHeight = double.PositiveInfinity;
+            SavePinnedBounds();
+        }
+        else
+        {
+            displaySettingsService.Save(settings);
+            ShowNearTray();
+        }
+    }
+
+    private void UpdatePinButton()
+    {
+        PinButton.Content = settings.IsPinned ? "" : "";
+        PinButton.Foreground = settings.IsPinned ? AccentBrush : MutedTextBrush;
+        PinButton.ToolTip = settings.IsPinned
+            ? "Unpin: open next to the tray and hide when clicking elsewhere"
+            : "Pin: keep the dashboard open (e.g. on a second monitor)";
+    }
+
+    private void QueuePinnedBoundsSave()
+    {
+        if (settings.IsPinned && IsVisible && WindowState == WindowState.Normal)
+        {
+            boundsSaveTimer.Stop();
+            boundsSaveTimer.Start();
+        }
+    }
+
+    private void SavePinnedBounds()
+    {
+        boundsSaveTimer.Stop();
+        if (WindowState == WindowState.Normal)
+        {
+            settings.PinnedLeft = Left;
+            settings.PinnedTop = Top;
+            settings.PinnedWidth = ActualWidth;
+            settings.PinnedHeight = ActualHeight;
+        }
+
+        displaySettingsService.Save(settings);
+    }
+
+    // The window has no title bar, so the header moves it. Moving the popup pins it: the user evidently
+    // wants it somewhere else. Buttons in the header handle their own clicks.
+    private void Header_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        double left = Left;
+        double top = Top;
+        DragMove();
+        if (Math.Abs(Left - left) > 4 || Math.Abs(Top - top) > 4)
+        {
+            if (settings.IsPinned)
+            {
+                SavePinnedBounds();
+            }
+            else
+            {
+                SetPinned(true);
+            }
+        }
+    }
+
+    private void PinButton_Click(object sender, RoutedEventArgs e) => SetPinned(!settings.IsPinned);
+
+    private void HideButton_Click(object sender, RoutedEventArgs e) => Hide();
+
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape && !settings.IsPinned)
+        {
+            Hide();
+        }
+    }
+
+    private void Window_Deactivated(object? sender, EventArgs e)
+    {
+        if (settings.IsPinned)
+        {
+            return;
+        }
+
+        // Let activation settle first: opening Settings from the dashboard activates another Argus window
+        // and should not hide the dashboard.
+        Dispatcher.BeginInvoke(DispatcherPriority.Input, () =>
+        {
+            if (!settings.IsPinned && IsVisible && !Application.Current.Windows.OfType<Window>().Any(window => window.IsActive))
+            {
+                Hide();
+                hiddenByDeactivationUtc = DateTime.UtcNow;
+            }
+        });
+    }
+
+    // Windows 11 rounds the corners of borderless windows only when asked; Windows 10 ignores this.
+    private void Window_SourceInitialized(object? sender, EventArgs e)
+    {
+        const int DwmwaWindowCornerPreference = 33;
+        int round = 2;
+        DwmSetWindowAttribute(new WindowInteropHelper(this).Handle, DwmwaWindowCornerPreference, ref round, sizeof(int));
+    }
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
 
     public void CloseFromApplication()
     {
@@ -279,8 +557,7 @@ public partial class MainWindow : Window
 
         RenderAllSparklines();
 
-        CurrentTelemetry = BuildTelemetry(hardware, devices);
-        TelemetryUpdated?.Invoke(CurrentTelemetry);
+        SnapshotApplied?.Invoke(hardware, devices);
     }
 
     // Applies custom names, then lists motherboard fans before GPU fans, each group sorted by name, so
@@ -865,64 +1142,5 @@ public partial class MainWindow : Window
 
         // One decimal for small rates so light traffic doesn't read as "0 KB/s".
         return value < 10 ? $"{value:0.0} {unit}" : $"{value:0} {unit}";
-    }
-
-    private string BuildTelemetry(HardwareReading hardware, IReadOnlyList<DeviceBattery> devices)
-    {
-        var telemetry = new System.Text.StringBuilder("Argus\n");
-        var summary = new List<string>();
-        if (settings.ShowCpuLoad)
-        {
-            summary.Add($"Load {FormatMetric(hardware.CpuUsage, "%")}");
-        }
-
-        if (settings.ShowMemory)
-        {
-            summary.Add($"Memory {FormatMetric(hardware.MemoryUsagePercent, "%")}");
-        }
-
-        if (summary.Count > 0)
-        {
-            telemetry.AppendLine(string.Join("  ", summary));
-        }
-
-        if (settings.ShowNetwork)
-        {
-            telemetry.AppendLine($"NET ↓ {FormatRate(hardware.DownloadKilobytesPerSecond, "KB/s")}  ↑ {FormatRate(hardware.UploadKilobytesPerSecond, "KB/s")}");
-        }
-
-        if (!settings.ShowDeviceBatteriesInTray || devices.Count == 0)
-        {
-            return telemetry.ToString().TrimEnd();
-        }
-
-        const int maxVisibleDeviceLines = 3;
-        int displayed = 0;
-        foreach (DeviceBattery device in devices)
-        {
-            if (displayed >= maxVisibleDeviceLines)
-            {
-                telemetry.AppendLine("...");
-                break;
-            }
-
-            string name = FormatDeviceName(device.Name);
-            telemetry.AppendLine($"{name}: {device.DisplayPercentage}");
-            displayed++;
-        }
-
-        return telemetry.ToString().TrimEnd();
-    }
-
-    private static string FormatDeviceName(string name)
-    {
-        const int maxNameLength = 18;
-        string trimmed = name.TrimEnd(':', '\\', '/');
-        if (trimmed.Length <= maxNameLength)
-        {
-            return trimmed;
-        }
-
-        return string.Concat(trimmed.AsSpan(0, maxNameLength - 1), "…");
     }
 }

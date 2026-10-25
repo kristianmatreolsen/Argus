@@ -57,14 +57,16 @@ public partial class App : Application
         hardwareMonitor = new HardwareMonitorService();
         StartupService.UpgradeToElevatedStartup();
         displaySettings = displaySettingsService.Load();
-        mainWindow = new MainWindow(hardwareMonitor, new DeviceBatteryService(), new SystemInfoService(), displaySettings);
+        mainWindow = new MainWindow(hardwareMonitor, new DeviceBatteryService(), new SystemInfoService(), displaySettings, displaySettingsService);
         trayIcon = CreateTrayIcon();
         mainWindow.Icon = trayIcon.ToImageSource();
         tray = (TaskbarIcon)Resources["TrayIcon"];
         tray.Icon = trayIcon;
-        mainWindow.TelemetryUpdated += UpdateTrayToolTip;
-        UpdateTrayToolTip(mainWindow.CurrentTelemetry);
-        mainWindow.ShowNearTray();
+        var trayToolTip = new TrayToolTipPanel();
+        DisplaySettings settings = displaySettings;
+        tray.TrayToolTip = trayToolTip;
+        mainWindow.SnapshotApplied += (hardware, devices) => trayToolTip.Update(hardware, devices, settings);
+        mainWindow.ShowFromTray();
     }
 
     protected override void OnExit(ExitEventArgs e)
@@ -182,20 +184,12 @@ public partial class App : Application
 
     private void TrayIcon_TrayLeftMouseUp(object sender, RoutedEventArgs e)
     {
-        ShowDashboard();
+        mainWindow?.ToggleFromTray();
     }
 
     private void ShowDashboard()
     {
-        mainWindow?.ShowNearTray();
-    }
-
-    private void UpdateTrayToolTip(string telemetry)
-    {
-        if (tray is not null)
-        {
-            tray.ToolTipText = telemetry;
-        }
+        mainWindow?.ShowFromTray();
     }
 
     private static Icon CreateTrayIcon()

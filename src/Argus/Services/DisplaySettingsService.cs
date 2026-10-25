@@ -38,10 +38,16 @@ public sealed class DisplaySettingsService
 
     public bool Save(DisplaySettings settings)
     {
-        bool startupUpdated = StartupService.SetStartup(settings.StartWithWindows);
-        if (!startupUpdated)
+        // Only touch the Run key when the user actually changed the setting, so saving layout
+        // changes never rewrites or removes the startup registration.
+        bool startupUpdated = true;
+        if (settings.StartWithWindows != StartupService.IsStartupEnabled())
         {
-            settings.StartWithWindows = StartupService.IsStartupEnabled();
+            startupUpdated = StartupService.SetStartup(settings.StartWithWindows);
+            if (!startupUpdated)
+            {
+                settings.StartWithWindows = StartupService.IsStartupEnabled();
+            }
         }
 
         string? directory = Path.GetDirectoryName(settingsPath);

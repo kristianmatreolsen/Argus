@@ -11,23 +11,48 @@ namespace Argus;
 
 public partial class App : Application
 {
-    private readonly HardwareMonitorService hardwareMonitor = new();
-    private readonly DeviceBatteryService deviceBattery = new();
-    private readonly SystemInfoService systemInfo = new();
+    private const string SingleInstanceMutexName = @"Local\Argus.SingleInstance";
+    private const string ShowDashboardEventName = @"Local\Argus.ShowDashboard";
+
     private readonly DisplaySettingsService displaySettingsService = new();
-    private readonly Icon trayIcon = CreateTrayIcon();
+    private Mutex? singleInstanceMutex;
+    private bool ownsSingleInstanceMutex;
+    private EventWaitHandle? showDashboardEvent;
+    private RegisteredWaitHandle? showDashboardRegistration;
+    private HardwareMonitorService? hardwareMonitor;
+    private TaskbarIcon? tray;
+    private Icon? trayIcon;
     private MainWindow? mainWindow;
-    private readonly Icon appIcon = CreateTrayIcon();
     private DisplaySettings? displaySettings;
     private SettingsWindow? settingsWindow;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        singleInstanceMutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out ownsSingleInstanceMutex);
+        showDashboardEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ShowDashboardEventName);
+        if (!ownsSingleInstanceMutex)
+        {
+            // Another Argus is already running in this session; ask it to show its dashboard instead.
+            showDashboardEvent.Set();
+            Shutdown();
+            return;
+        }
+
+        showDashboardRegistration = ThreadPool.RegisterWaitForSingleObject(
+            showDashboardEvent,
+            (_, _) => Dispatcher.BeginInvoke(new Action(ShowDashboard)),
+            null,
+            Timeout.Infinite,
+            executeOnlyOnce: false);
+
+        hardwareMonitor = new HardwareMonitorService();
         displaySettings = displaySettingsService.Load();
-        mainWindow = new MainWindow(hardwareMonitor, deviceBattery, systemInfo, displaySettings);
-        mainWindow.Icon = appIcon.ToImageSource();
-        TaskbarIcon tray = (TaskbarIcon)Resources["TrayIcon"];
+        mainWindow = new MainWindow(hardwareMonitor, new DeviceBatteryService(), new SystemInfoService(), displaySettings);
+        trayIcon = CreateTrayIcon();
+        mainWindow.Icon = trayIcon.ToImageSource();
+        tray = (TaskbarIcon)Resources["TrayIcon"];
         tray.Icon = trayIcon;
         mainWindow.TelemetryUpdated += UpdateTrayToolTip;
         UpdateTrayToolTip(mainWindow.CurrentTelemetry);
@@ -36,11 +61,18 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        showDashboardRegistration?.Unregister(null);
+        showDashboardEvent?.Dispose();
         mainWindow?.Dispose();
-        ((TaskbarIcon)Resources["TrayIcon"]).Dispose();
-        trayIcon.Dispose();
-        appIcon.Dispose();
-        hardwareMonitor.Dispose();
+        tray?.Dispose();
+        trayIcon?.Dispose();
+        hardwareMonitor?.Dispose();
+        if (ownsSingleInstanceMutex)
+        {
+            singleInstanceMutex?.ReleaseMutex();
+        }
+
+        singleInstanceMutex?.Dispose();
         base.OnExit(e);
     }
 
@@ -112,7 +144,7 @@ public partial class App : Application
 
     private void UpdateTrayToolTip(string telemetry)
     {
-        if (Resources["TrayIcon"] is TaskbarIcon tray)
+        if (tray is not null)
         {
             tray.ToolTipText = telemetry;
         }

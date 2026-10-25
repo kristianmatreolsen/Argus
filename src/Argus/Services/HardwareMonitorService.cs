@@ -455,12 +455,13 @@ public sealed class HardwareMonitorService : IDisposable
 
         DateTime now = DateTime.UtcNow;
         double elapsedSeconds = Math.Max((now - lastNetworkSampleUtc).TotalSeconds, 0.5d);
+        // Totals drop when an adapter (e.g. a VPN) goes down; clamp so that sample reads as 0 instead of negative.
         double downloadKilobytesPerSecond = previousReceivedBytes == 0
             ? 0d
-            : (totalReceived - previousReceivedBytes) / elapsedSeconds / 1024d;
+            : Math.Max(0d, (totalReceived - previousReceivedBytes) / elapsedSeconds / 1024d);
         double uploadKilobytesPerSecond = previousSentBytes == 0
             ? 0d
-            : (totalSent - previousSentBytes) / elapsedSeconds / 1024d;
+            : Math.Max(0d, (totalSent - previousSentBytes) / elapsedSeconds / 1024d);
 
         previousReceivedBytes = totalReceived;
         previousSentBytes = totalSent;

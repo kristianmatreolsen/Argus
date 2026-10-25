@@ -21,7 +21,8 @@ public partial class MainWindow : Window
     private static readonly TimeSpan SystemRefreshInterval = TimeSpan.FromSeconds(30);
     private bool closeFromApplication;
     private int refreshInProgress;
-    private IReadOnlyList<DeviceBattery> cachedDevices = Array.Empty<DeviceBattery>();
+    private int batteryRefreshInProgress;
+    private volatile IReadOnlyList<DeviceBattery> cachedDevices = Array.Empty<DeviceBattery>();
     private SystemInfo? cachedSystem;
     private DateTime batteryRefreshedAtUtc;
     private DateTime systemRefreshedAtUtc;
@@ -139,13 +140,32 @@ public partial class MainWindow : Window
             systemRefreshedAtUtc = now;
         }
 
-        if (cachedDevices.Count == 0 || now - batteryRefreshedAtUtc >= BatteryRefreshInterval)
+        // Battery scans can take seconds (uncached Bluetooth LE reads), so they run on their own
+        // task instead of delaying the 1-second hardware refresh.
+        if (now - batteryRefreshedAtUtc >= BatteryRefreshInterval &&
+            Interlocked.Exchange(ref batteryRefreshInProgress, 1) == 0)
         {
-            cachedDevices = deviceBattery.Read();
             batteryRefreshedAtUtc = now;
+            _ = Task.Run(RefreshBatteries);
         }
 
         return new TelemetrySnapshot(hardware, cachedDevices, cachedSystem);
+    }
+
+    private void RefreshBatteries()
+    {
+        try
+        {
+            cachedDevices = deviceBattery.Read();
+        }
+        catch (Exception)
+        {
+            // Keep the previous device list if enumeration fails.
+        }
+        finally
+        {
+            Volatile.Write(ref batteryRefreshInProgress, 0);
+        }
     }
 
     private void ApplySnapshot(TelemetrySnapshot snapshot)

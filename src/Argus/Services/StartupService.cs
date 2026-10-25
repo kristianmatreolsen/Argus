@@ -19,14 +19,8 @@ public static class StartupService
                 return false;
             }
 
-            if (string.Equals(registeredPath, currentPath, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-
-            using RegistryKey? writableKey = Registry.CurrentUser.OpenSubKey(RunRegistryKey, writable: true);
-            writableKey?.DeleteValue(AppName, throwOnMissingValue: false);
-            return false;
+            // An entry pointing at another Argus copy belongs to that copy; report it as not enabled for this one.
+            return string.Equals(registeredPath, currentPath, StringComparison.OrdinalIgnoreCase);
         }
         catch
         {

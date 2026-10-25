@@ -13,6 +13,7 @@ public partial class App : Application
 {
     private const string SingleInstanceMutexName = @"Local\Argus.SingleInstance";
     private const string ShowDashboardEventName = @"Local\Argus.ShowDashboard";
+    private const string ReplaceArgument = "--replace";
 
     private readonly DisplaySettingsService displaySettingsService = new();
     private Mutex? singleInstanceMutex;
@@ -32,6 +33,12 @@ public partial class App : Application
 
         singleInstanceMutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out ownsSingleInstanceMutex);
         showDashboardEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ShowDashboardEventName);
+        if (!ownsSingleInstanceMutex && e.Args.Contains(ReplaceArgument))
+        {
+            // Started by "Restart as administrator": the previous instance is shutting down, so wait for it.
+            ownsSingleInstanceMutex = WaitForPreviousInstance(singleInstanceMutex);
+        }
+
         if (!ownsSingleInstanceMutex)
         {
             // Another Argus is already running in this session; ask it to show its dashboard instead.
@@ -48,6 +55,7 @@ public partial class App : Application
             executeOnlyOnce: false);
 
         hardwareMonitor = new HardwareMonitorService();
+        StartupService.UpgradeToElevatedStartup();
         displaySettings = displaySettingsService.Load();
         mainWindow = new MainWindow(hardwareMonitor, new DeviceBatteryService(), new SystemInfoService(), displaySettings);
         trayIcon = CreateTrayIcon();
@@ -74,6 +82,46 @@ public partial class App : Application
 
         singleInstanceMutex?.Dispose();
         base.OnExit(e);
+    }
+
+    // Relaunches Argus elevated (one UAC prompt) and exits this instance. If the prompt is cancelled,
+    // this instance keeps running.
+    public void RestartAsAdministrator()
+    {
+        string? exePath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(exePath))
+        {
+            return;
+        }
+
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exePath, ReplaceArgument)
+            {
+                UseShellExecute = true,
+                Verb = "runas"
+            });
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            return;
+        }
+
+        mainWindow?.CloseFromApplication();
+        Shutdown();
+    }
+
+    private static bool WaitForPreviousInstance(Mutex mutex)
+    {
+        try
+        {
+            return mutex.WaitOne(TimeSpan.FromSeconds(15));
+        }
+        catch (AbandonedMutexException)
+        {
+            // The previous instance exited without releasing the mutex; we own it now.
+            return true;
+        }
     }
 
     private void OpenTrayMenuItem_Click(object sender, RoutedEventArgs e)

@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using Argus.Models;
+using Argus.Services;
 
 namespace Argus;
 
@@ -36,6 +37,9 @@ public partial class SettingsWindow : Window
         DevicesCheckBox.IsChecked = settings.ShowDevices;
         TrayBatteriesCheckBox.IsChecked = settings.ShowDeviceBatteriesInTray;
         StartWithWindowsCheckBox.IsChecked = settings.StartWithWindows;
+        StartupHintText.Text = SystemCapabilities.IsElevated
+            ? "Starts with administrator rights through Task Scheduler, without a UAC prompt."
+            : "Argus is not running as administrator, so it would start without CPU temperature and fan readings. Restart it as administrator first to start with full access.";
 
         foreach (var checkBox in new[]
         {

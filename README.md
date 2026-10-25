@@ -10,17 +10,19 @@
 ## ✨ Features
 
 - **📊 Real-Time Metric Telemetry (1-Second Refresh)**:
-  - **GPU**: Core Temperature & GPU Utilization Load (`%`) with Dedicated VRAM usage (`GB used / total`).
-  - **CPU**: Core Package Temperature (`°C`) & Total CPU Utilization (`%`).
+  - **GPU**: Temperature, load (`%`), power draw (`W`) and dedicated VRAM (`GB used / total`) of the dedicated GPU (on systems with an integrated and a dedicated GPU, the dedicated one is shown).
+  - **CPU**: Temperature (`°C`), package power draw (`W`) and total CPU load (`%`).
+  - **Session peaks**: the highest CPU and GPU temperature since Argus started.
   - **Memory**: System RAM utilization (`%`) and physical memory breakdown (`GB used / total`).
   - **Network**: Independent Download (`↓`) and Upload (`↑`) rates with automatic peak bandwidth scaling and network adapter link capacity (e.g. `1 Gbps`, `2.5 Gbps`).
-  - **FPS**: Live framerate of the app you last had in the foreground (opening the dashboard doesn't reset it), using a locally installed PresentMon (bundled with AMD Software, RivaTuner Statistics Server or NVIDIA FrameView) or one placed next to `Argus.exe`.
+  - **FPS**: Live framerate and **1% lows** of the app in the foreground (or the app behind the dashboard while you look at it), measured with Intel's PresentMon, which is bundled with Argus.
   - **Fan Speed**: RPM tracking across all active system, case, and GPU cooling fans, with custom fan names (fans are listed alphabetically by name).
 
 - **📈 Grafana-Style Time-Series Graphs**:
-  - Hardware-accelerated vector sparklines with 30-second rolling trend history.
+  - Vector sparklines for every metric, including FPS, with a selectable time span (30 s, 2, 5 or 10 minutes).
   - Temperature graphs auto-scale to recent readings; a dashed line marks the warning threshold.
   - **Smart Threshold Alerts**: Colors shift from neutral Grafana Blue (`#5794F2`) to Amber (`#FF9830`) on warning thresholds and Red (`#F2495C`) on critical loads, based on a 5-second average so brief spikes don't trigger them.
+  - **Temperature notifications**: a Windows notification when the CPU or GPU stays at or above its critical temperature for 30 seconds. CPU and GPU warning/critical temperatures are configurable in Settings.
 
 - **🖐️ Full Drag & Drop Customization**:
   - Drag and drop **section blocks** (`METRICS`, `SYSTEM`, `DEVICES`) to reorder the main view.
@@ -30,17 +32,24 @@
 
 - **💾 System & Storage Monitoring**:
   - Live PC uptime and machine info.
-  - Multi-drive health cards with free space badges (`% free`) and capacity stats.
+  - Free space per drive with a usage bar.
+  - Physical disk health: temperature and remaining life from SMART (NVMe and SATA drives).
 
 - **🔋 Peripheral Battery Status**:
-  - Real-time battery levels for connected Bluetooth HID devices and supported wireless peripherals.
+  - Battery levels for connected Bluetooth devices and supported USB headsets (currently the SteelSeries Arctis Nova 5).
   - Color-coded battery badges (Green `> 50%`, Amber `20–50%`, Red `< 20%`).
 
+- **🪟 Popup or Pinned Window**:
+  - Opens as a popup next to the tray that hides when you click elsewhere.
+  - Pin it (or drag it by its header) to keep it open anywhere, e.g. on a second monitor; size and position are remembered, and it can stay on top of other windows.
+  - Hovering the tray icon shows a compact summary: CPU/GPU load and temperature, RAM, FPS and battery levels.
+
 - **🚀 Optional Windows Auto-Start**:
-  - Toggle "Start Argus on Windows startup" in the settings menu to automatically launch Argus upon logging into Windows.
+  - Toggle "Start Argus on Windows startup" in Settings. When Argus runs as administrator this registers a Task Scheduler task, so it starts with full sensor access at sign-in without a UAC prompt.
 
 - **🔒 100% Local & Privacy-Focused**:
   - Zero external network requests, zero telemetry tracking, and zero cloud dependencies.
+  - Diagnostics are written only to a local log (`%LOCALAPPDATA%\Argus\argus.log`, "Open log folder" in Settings).
   - Runs completely offline on your local machine.
 
 ---
@@ -52,7 +61,7 @@
 | **Operating System** | Windows 10 / Windows 11 (64-bit) |
 | **Users (Standalone Executable)** | **No runtime installation needed!** Download and run `Argus.exe`. |
 | **SDK (Developers)** | [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) |
-| **Permissions** | Standard user mode. CPU temperature and motherboard fan sensors usually require running Argus as administrator. Vendor utilities that access the same sensor chip (e.g. ASUS Armoury Crate) can make motherboard fans unavailable. |
+| **Permissions** | Runs as a standard user. CPU temperature and motherboard fans need Argus to run as administrator (the dashboard offers "Restart as admin") and the free [PawnIO](https://pawnio.eu/) driver. Vendor utilities that access the same sensor chip (e.g. ASUS Armoury Crate) can make motherboard fans unavailable. |
 
 ---
 
@@ -88,7 +97,7 @@
 
 ## 📖 Usage Guide
 
-- **Accessing the Dashboard**: Click the Argus eye icon in your Windows taskbar system tray (bottom-right notification area) to pop up the dashboard.
+- **Accessing the Dashboard**: Click the Argus eye icon in the notification area to open or close the dashboard. Click the pin button (or drag the header) to keep it open; press Esc or click elsewhere to hide the popup.
 - **Settings Flyout**: Click the **SETTINGS** button in the top-right corner of the dashboard or right-click the system tray icon and select **Settings**.
   - Toggle visibility for metric cards, system information, connected devices, and tray battery details.
   - Give fans custom names (e.g. `CPU 1`, `Front`); each fan's live RPM is shown to help match it to its motherboard header.
@@ -96,7 +105,7 @@
 - **Reordering Elements**:
   - Click and drag any **section header card** up or down to reorder sections.
   - Click and drag any **metric card** to swap positions in the grid.
-- **System Tray Hover**: Hovering over the system tray icon displays a live quick-summary tooltip of your CPU load, Memory, Network traffic, and connected battery statuses. Metrics that the hardware or provider does not expose are shown as unavailable.
+- **System Tray Hover**: Hovering over the tray icon shows CPU and GPU load and temperature, RAM, FPS while a game is running, and device battery levels. Metrics the hardware does not expose are shown as `--`.
 
 ---
 
@@ -110,6 +119,9 @@ Argus was built with security and transparency in mind:
    - `LibreHardwareMonitorLib`: Open-source hardware sensor library.
    - `Hardcodet.NotifyIcon.Wpf`: WPF system tray wrapper.
    - `HidSharp`: Open-source HID device communication library.
+   - `PresentMon` (Intel, MIT): bundled for FPS measurement. The build downloads a pinned release and verifies its SHA-256.
+
+   See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for licenses.
 
 ---
 

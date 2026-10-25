@@ -23,6 +23,20 @@ public sealed class DisplaySettings
     public double? PinnedWidth { get; set; }
     public double? PinnedHeight { get; set; }
 
+    // Keeps the pinned dashboard above other windows (e.g. a borderless game on another monitor).
+    public bool PinnedOnTop { get; set; }
+
+    // How much history the graphs show, in seconds: 30, 120, 300 or 600.
+    public int GraphSpanSeconds { get; set; } = 30;
+
+    // Temperature thresholds in °C. Warning turns the graph amber, critical red; staying at or above
+    // critical for 30 seconds raises a notification when TemperatureAlerts is on.
+    public double CpuTempWarning { get; set; } = 85;
+    public double CpuTempCritical { get; set; } = 95;
+    public double GpuTempWarning { get; set; } = 80;
+    public double GpuTempCritical { get; set; } = 87;
+    public bool TemperatureAlerts { get; set; } = true;
+
     // Custom fan names keyed by FanReading.Id.
     public Dictionary<string, string> FanNames { get; set; } = new();
 

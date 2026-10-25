@@ -23,6 +23,7 @@ public partial class MainWindow : Window
     private const double PopupWidth = 420;
     private const double PopupHeight = 680;
     private DateTime hiddenByDeactivationUtc;
+    private TelemetrySnapshot? latestSnapshot;
     private static readonly TimeSpan BatteryRefreshInterval = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan SystemRefreshInterval = TimeSpan.FromSeconds(30);
     private bool closeFromApplication;
@@ -48,18 +49,28 @@ public partial class MainWindow : Window
     private static readonly Brush MutedTextBrush = CreateFrozenBrush(0x64, 0x74, 0x8B);
     private static readonly Brush AccentBrush = CreateFrozenBrush(0x38, 0xBD, 0xF8);
 
-    // Warning / critical thresholds. Modern GPUs run 65–80°C under load and current desktop CPUs
-    // boost up to ~95°C by design, so lower limits would flag normal gaming sessions.
-    private const double GpuTempWarning = 80;
-    private const double GpuTempCritical = 87;
-    private const double CpuTempWarning = 85;
-    private const double CpuTempCritical = 95;
+    // Load and memory thresholds; temperature thresholds are user settings (DisplaySettings).
     private const double CpuLoadWarning = 85;
     private const double CpuLoadCritical = 95;
     private const double MemoryWarning = 85;
     private const double MemoryCritical = 95;
 
-    private const int MaxHistoryPoints = 30;
+    // One point per second for up to the longest graph span (10 minutes). Graphs average the visible span
+    // down to at most MaxPlotPoints so long spans stay smooth and cheap to draw.
+    private const int MaxHistoryPoints = 600;
+    private const int MaxPlotPoints = 120;
+    private readonly List<double> fpsHistory = new();
+
+    // Highest temperatures since Argus started.
+    private double? cpuTempPeak;
+    private double? gpuTempPeak;
+
+    // A temperature must stay at or above critical (5-second average) this long before a notification,
+    // and the same component is not reported again within the cooldown.
+    private static readonly TimeSpan AlertDelay = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan AlertCooldown = TimeSpan.FromMinutes(10);
+    private readonly TemperatureAlertState cpuAlert = new();
+    private readonly TemperatureAlertState gpuAlert = new();
     private readonly List<double> gpuTempHistory = new();
     private readonly List<double> gpuLoadHistory = new();
     private readonly List<double> cpuTempHistory = new();
@@ -70,6 +81,9 @@ public partial class MainWindow : Window
 
     // Raised after every refresh with the values shown on the dashboard (used by the tray tooltip panel).
     public event Action<HardwareReading, IReadOnlyList<DeviceBattery>>? SnapshotApplied;
+
+    // Raised with a title and message when a temperature has stayed critical (shown as a notification).
+    public event Action<string, string>? AlertRaised;
 
     // Latest fan readings with their sensor names, used by Settings to offer renaming.
     public IReadOnlyList<FanReading> CurrentFans { get; private set; } = Array.Empty<FanReading>();
@@ -92,6 +106,13 @@ public partial class MainWindow : Window
         boundsSaveTimer.Tick += (_, _) => SavePinnedBounds();
         LocationChanged += (_, _) => QueuePinnedBoundsSave();
         SizeChanged += (_, _) => QueuePinnedBoundsSave();
+        IsVisibleChanged += (_, e) =>
+        {
+            if (e.NewValue is true && latestSnapshot is not null)
+            {
+                UpdateDashboard(latestSnapshot);
+            }
+        };
         refreshTimer.Tick += async (_, _) => await RefreshAsync();
         _ = RefreshAsync();
         refreshTimer.Start();
@@ -118,7 +139,12 @@ public partial class MainWindow : Window
 
         ApplySectionOrder();
         ApplyCardOrder();
+        ApplyTopmost();
+        RenderAllSparklines();
     }
+
+    // "Keep on top" only applies while pinned; the popup hides as soon as it loses focus anyway.
+    private void ApplyTopmost() => Topmost = settings.IsPinned && settings.PinnedOnTop;
 
     // Tells the user why CPU temperature and motherboard fans show "--" and offers the fix, instead of
     // leaving the cards silently empty.
@@ -227,6 +253,7 @@ public partial class MainWindow : Window
     private void ShowNearTray()
     {
         UpdateSensorAccessBanner();
+        ApplyTopmost();
         const double margin = 12;
         Rect workArea = SystemParameters.WorkArea;
         ResizeMode = settings.IsPinned ? ResizeMode.CanResize : ResizeMode.NoResize;
@@ -280,6 +307,7 @@ public partial class MainWindow : Window
     {
         settings.IsPinned = pinned;
         UpdatePinButton();
+        ApplyTopmost();
         if (pinned)
         {
             ResizeMode = ResizeMode.CanResize;
@@ -414,9 +442,10 @@ public partial class MainWindow : Window
             TelemetrySnapshot snapshot = await Task.Run(ReadTelemetry);
             ApplySnapshot(snapshot);
         }
-        catch (Exception)
+        catch (Exception exception)
         {
             // Keep the tray app responsive if a device disappears during a refresh.
+            AppLog.WarnOnce("refresh", "Refreshing the dashboard failed", exception);
         }
         finally
         {
@@ -453,9 +482,10 @@ public partial class MainWindow : Window
         {
             cachedDevices = deviceBattery.Read();
         }
-        catch (Exception)
+        catch (Exception exception)
         {
             // Keep the previous device list if enumeration fails.
+            AppLog.WarnOnce("battery-refresh", "Reading device batteries failed", exception);
         }
         finally
         {
@@ -463,7 +493,42 @@ public partial class MainWindow : Window
         }
     }
 
+    // Every refresh updates the history, peaks, alerts and tray tooltip. The dashboard's text and graphs are
+    // only updated while it is visible; when it opens, it is drawn from the latest snapshot right away.
     private void ApplySnapshot(TelemetrySnapshot snapshot)
+    {
+        RecordSnapshot(snapshot);
+        latestSnapshot = snapshot;
+        if (IsVisible)
+        {
+            UpdateDashboard(snapshot);
+        }
+
+        SnapshotApplied?.Invoke(snapshot.Hardware, snapshot.Devices);
+    }
+
+    private void RecordSnapshot(TelemetrySnapshot snapshot)
+    {
+        HardwareReading hardware = snapshot.Hardware;
+        CurrentFans = hardware.Fans;
+        gpuTempPeak = Peak(gpuTempPeak, hardware.GpuTemperature);
+        cpuTempPeak = Peak(cpuTempPeak, hardware.CpuTemperature);
+
+        // Only record real readings so an unavailable sensor doesn't draw a drop to zero.
+        AddHistoryPoint(gpuTempHistory, hardware.GpuTemperature);
+        AddHistoryPoint(gpuLoadHistory, hardware.GpuUsage);
+        AddHistoryPoint(cpuTempHistory, hardware.CpuTemperature);
+        AddHistoryPoint(cpuLoadHistory, hardware.CpuUsage);
+        AddHistoryPoint(memoryHistory, hardware.MemoryUsagePercent);
+        AddHistoryPoint(downloadHistory, hardware.DownloadKilobytesPerSecond);
+        AddHistoryPoint(uploadHistory, hardware.UploadKilobytesPerSecond);
+        AddHistoryPoint(fpsHistory, hardware.Fps);
+
+        CheckTemperatureAlert(cpuAlert, "CPU", cpuTempHistory, settings.CpuTempCritical);
+        CheckTemperatureAlert(gpuAlert, "GPU", gpuTempHistory, settings.GpuTempCritical);
+    }
+
+    private void UpdateDashboard(TelemetrySnapshot snapshot)
     {
         HardwareReading hardware = snapshot.Hardware;
         IReadOnlyList<DeviceBattery> devices = snapshot.Devices;
@@ -471,12 +536,17 @@ public partial class MainWindow : Window
 
         // GPU TEMP
         GpuTempText.Text = FormatMetric(hardware.GpuTemperature, "°C");
+        GpuPowerText.Text = FormatPower(hardware.GpuPower);
+        GpuTempPeakText.Text = gpuTempPeak is double gpuPeak ? $"peak {gpuPeak:0}°C" : string.Empty;
         GpuTemperatureCard.ToolTip = hardware.GpuTemperature.HasValue
             ? $"GPU Core Temperature: {hardware.GpuTemperature.Value:0}°C"
             : "GPU Temperature: Sensor Unavailable";
 
         // GPU LOAD
         GpuLoadText.Text = hardware.GpuUsage.HasValue ? $"{hardware.GpuUsage.Value:0}%" : "--%";
+        VramText.Text = hardware.VramUsedGb is double vramUsed && hardware.VramTotalGb is double vramTotal
+            ? $"{vramUsed:0.0} / {vramTotal:0} GB"
+            : string.Empty;
         string vramInfo = (hardware.VramUsedGb.HasValue && hardware.VramTotalGb.HasValue)
             ? $"{hardware.VramUsedGb.Value:0.0} GB / {hardware.VramTotalGb.Value:0.0} GB Used"
             : (hardware.VramUsagePercent.HasValue ? $"{hardware.VramUsagePercent.Value:0}% Used" : "Unavailable");
@@ -484,6 +554,8 @@ public partial class MainWindow : Window
 
         // CPU TEMP
         CpuTempText.Text = FormatMetric(hardware.CpuTemperature, "°C");
+        CpuPowerText.Text = FormatPower(hardware.CpuPower);
+        CpuTempPeakText.Text = cpuTempPeak is double cpuPeak ? $"peak {cpuPeak:0}°C" : string.Empty;
         CpuTemperatureCard.ToolTip = hardware.CpuTemperature.HasValue
             ? $"CPU Package Temperature: {hardware.CpuTemperature.Value:0}°C"
             : "CPU Temperature: Sensor Unavailable";
@@ -509,17 +581,20 @@ public partial class MainWindow : Window
         FpsText.Text = hasFps ? $"{hardware.Fps:0} FPS" : "--";
         FpsText.Foreground = hasFps ? PrimaryTextBrush : MutedTextBrush;
         FpsStatusText.Text = hasFps ? hardware.FpsApplication : "No game detected";
+        FpsLowText.Text = hasFps && hardware.FpsOnePercentLow is double low ? $"1% low {low:0}" : string.Empty;
         FpsCard.ToolTip = hasFps
-            ? $"{hardware.FpsApplication}: {hardware.Fps:0} displayed frames per second"
+            ? $"{hardware.FpsApplication}: {hardware.Fps:0} displayed frames per second" +
+              (hardware.FpsOnePercentLow is double onePercentLow
+                  ? $"\n1% low: {onePercentLow:0} FPS (the slowest 1% of frames over the last 10 seconds)"
+                  : string.Empty)
             : "The last app you used in the foreground is not drawing frames.";
 
         // FAN SPEED
-        CurrentFans = hardware.Fans;
         IReadOnlyList<FanReading> fans = ApplyFanNames(hardware.Fans);
         if (fans.Count > 1)
         {
             FanText.Visibility = Visibility.Collapsed;
-            FansList.ItemsSource = fans;
+            SetItems(FansList, fans);
             FansScroll.Visibility = Visibility.Visible;
             string fanDetails = string.Join("\n", fans.Select(f => $"• {f.Name}: {f.Rpm:0} {f.Unit}"));
             FanSpeedCard.ToolTip = $"System Fans Detected ({fans.Count}):\n{fanDetails}";
@@ -542,22 +617,24 @@ public partial class MainWindow : Window
         // SYSTEM & DEVICES
         MachineText.Text = system.MachineName;
         UptimeText.Text = system.Uptime;
-        DrivesList.ItemsSource = system.Drives;
-        DeviceList.ItemsSource = devices;
+        SetItems(DrivesList, system.Drives);
+        SetItems(DisksList, hardware.Disks);
+        SetItems(DeviceList, devices);
         EmptyDevicesText.Visibility = devices.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
-        // Only record real readings so an unavailable sensor doesn't draw a drop to zero.
-        AddHistoryPoint(gpuTempHistory, hardware.GpuTemperature);
-        AddHistoryPoint(gpuLoadHistory, hardware.GpuUsage);
-        AddHistoryPoint(cpuTempHistory, hardware.CpuTemperature);
-        AddHistoryPoint(cpuLoadHistory, hardware.CpuUsage);
-        AddHistoryPoint(memoryHistory, hardware.MemoryUsagePercent);
-        AddHistoryPoint(downloadHistory, hardware.DownloadKilobytesPerSecond);
-        AddHistoryPoint(uploadHistory, hardware.UploadKilobytesPerSecond);
-
         RenderAllSparklines();
+    }
 
-        SnapshotApplied?.Invoke(hardware, devices);
+    // Replacing ItemsSource rebuilds every row, so lists that rarely change (drives, disks, devices) are
+    // only replaced when their content differs. The item types are records, so this compares values.
+    private static void SetItems<T>(ItemsControl list, IReadOnlyList<T> items)
+    {
+        if (list.ItemsSource is IReadOnlyList<T> current && current.SequenceEqual(items))
+        {
+            return;
+        }
+
+        list.ItemsSource = items;
     }
 
     // Applies custom names, then lists motherboard fans before GPU fans, each group sorted by name, so
@@ -865,23 +942,92 @@ public partial class MainWindow : Window
     private void RenderAllSparklines()
     {
         // Colour follows a short rolling average so a one-second spike doesn't flash the card amber.
-        var (gpuTempStroke, gpuTempFill) = GetThresholdColors(RecentAverage(gpuTempHistory), GpuTempWarning, GpuTempCritical);
-        var (cpuTempStroke, cpuTempFill) = GetThresholdColors(RecentAverage(cpuTempHistory), CpuTempWarning, CpuTempCritical);
+        var (gpuTempStroke, gpuTempFill) = GetThresholdColors(RecentAverage(gpuTempHistory), settings.GpuTempWarning, settings.GpuTempCritical);
+        var (cpuTempStroke, cpuTempFill) = GetThresholdColors(RecentAverage(cpuTempHistory), settings.CpuTempWarning, settings.CpuTempCritical);
         var (cpuLoadStroke, cpuLoadFill) = GetThresholdColors(RecentAverage(cpuLoadHistory), CpuLoadWarning, CpuLoadCritical);
         var (memStroke, memFill) = GetThresholdColors(RecentAverage(memoryHistory), MemoryWarning, MemoryCritical);
         // A fully loaded GPU while gaming is expected, so GPU load never changes colour.
         var (gpuLoadStroke, gpuLoadFill) = GetThresholdColors(0, double.PositiveInfinity, double.PositiveInfinity);
 
-        var (gpuTempMin, gpuTempMax) = GetTemperatureRange(gpuTempHistory);
-        var (cpuTempMin, cpuTempMax) = GetTemperatureRange(cpuTempHistory);
+        List<double> gpuTemps = GraphWindow(gpuTempHistory);
+        List<double> cpuTemps = GraphWindow(cpuTempHistory);
+        List<double> fps = GraphWindow(fpsHistory);
+        var (gpuTempMin, gpuTempMax) = GetTemperatureRange(gpuTemps);
+        var (cpuTempMin, cpuTempMax) = GetTemperatureRange(cpuTemps);
+        var (fpsStroke, fpsFill) = GetThresholdColors(0, double.PositiveInfinity, double.PositiveInfinity);
+        double fpsMax = Math.Max(fps.DefaultIfEmpty(0).Max() * 1.15, 60);
 
-        RenderSparkline(GpuTempSparklineCanvas, gpuTempHistory, minVal: gpuTempMin, maxVal: gpuTempMax, strokeColor: gpuTempStroke, fillColor: gpuTempFill, warningThreshold: GpuTempWarning);
-        RenderSparkline(GpuLoadSparklineCanvas, gpuLoadHistory, minVal: 0, maxVal: 100, strokeColor: gpuLoadStroke, fillColor: gpuLoadFill);
-        RenderSparkline(CpuTempSparklineCanvas, cpuTempHistory, minVal: cpuTempMin, maxVal: cpuTempMax, strokeColor: cpuTempStroke, fillColor: cpuTempFill, warningThreshold: CpuTempWarning);
-        RenderSparkline(CpuLoadSparklineCanvas, cpuLoadHistory, minVal: 0, maxVal: 100, strokeColor: cpuLoadStroke, fillColor: cpuLoadFill, warningThreshold: CpuLoadWarning);
-        RenderSparkline(MemorySparklineCanvas, memoryHistory, minVal: 0, maxVal: 100, strokeColor: memStroke, fillColor: memFill, warningThreshold: MemoryWarning);
-        RenderDualSparkline(NetworkSparklineCanvas, downloadHistory, uploadHistory, downColor: Color.FromRgb(0x73, 0xBF, 0x69), upColor: Color.FromRgb(0xB8, 0x77, 0xD9));
+        RenderSparkline(GpuTempSparklineCanvas, gpuTemps, minVal: gpuTempMin, maxVal: gpuTempMax, strokeColor: gpuTempStroke, fillColor: gpuTempFill, warningThreshold: settings.GpuTempWarning);
+        RenderSparkline(GpuLoadSparklineCanvas, GraphWindow(gpuLoadHistory), minVal: 0, maxVal: 100, strokeColor: gpuLoadStroke, fillColor: gpuLoadFill);
+        RenderSparkline(CpuTempSparklineCanvas, cpuTemps, minVal: cpuTempMin, maxVal: cpuTempMax, strokeColor: cpuTempStroke, fillColor: cpuTempFill, warningThreshold: settings.CpuTempWarning);
+        RenderSparkline(CpuLoadSparklineCanvas, GraphWindow(cpuLoadHistory), minVal: 0, maxVal: 100, strokeColor: cpuLoadStroke, fillColor: cpuLoadFill, warningThreshold: CpuLoadWarning);
+        RenderSparkline(MemorySparklineCanvas, GraphWindow(memoryHistory), minVal: 0, maxVal: 100, strokeColor: memStroke, fillColor: memFill, warningThreshold: MemoryWarning);
+        RenderSparkline(FpsSparklineCanvas, fps, minVal: 0, maxVal: fpsMax, strokeColor: fpsStroke, fillColor: fpsFill);
+        RenderDualSparkline(NetworkSparklineCanvas, GraphWindow(downloadHistory), GraphWindow(uploadHistory), downColor: Color.FromRgb(0x73, 0xBF, 0x69), upColor: Color.FromRgb(0xB8, 0x77, 0xD9));
     }
+
+    // The last GraphSpanSeconds points, averaged into at most MaxPlotPoints buckets.
+    private List<double> GraphWindow(List<double> history)
+    {
+        int span = Math.Clamp(settings.GraphSpanSeconds, 30, MaxHistoryPoints);
+        int start = Math.Max(0, history.Count - span);
+        int count = history.Count - start;
+        if (count <= MaxPlotPoints)
+        {
+            return history.GetRange(start, count);
+        }
+
+        var points = new List<double>(MaxPlotPoints);
+        for (int bucket = 0; bucket < MaxPlotPoints; bucket++)
+        {
+            int from = start + (int)((long)bucket * count / MaxPlotPoints);
+            int to = start + (int)((long)(bucket + 1) * count / MaxPlotPoints);
+            double sum = 0;
+            for (int i = from; i < to; i++)
+            {
+                sum += history[i];
+            }
+
+            points.Add(sum / Math.Max(1, to - from));
+        }
+
+        return points;
+    }
+
+    private void CheckTemperatureAlert(TemperatureAlertState state, string component, List<double> history, double critical)
+    {
+        DateTime now = DateTime.UtcNow;
+        if (history.Count == 0 || RecentAverage(history) < critical)
+        {
+            state.CriticalSinceUtc = null;
+            return;
+        }
+
+        state.CriticalSinceUtc ??= now;
+        if (now - state.CriticalSinceUtc < AlertDelay || now - state.LastAlertUtc < AlertCooldown)
+        {
+            return;
+        }
+
+        state.LastAlertUtc = now;
+        string message = $"{component} has been at or above {critical:0}°C for {AlertDelay.TotalSeconds:0} seconds (now {history[^1]:0}°C).";
+        AppLog.Warn($"Temperature alert: {message}");
+        if (settings.TemperatureAlerts)
+        {
+            AlertRaised?.Invoke($"{component} temperature is critical", message);
+        }
+    }
+
+    private sealed class TemperatureAlertState
+    {
+        public DateTime? CriticalSinceUtc { get; set; }
+        public DateTime LastAlertUtc { get; set; } = DateTime.MinValue;
+    }
+
+    private static double? Peak(double? peak, double? value) =>
+        value is double current ? Math.Max(peak ?? current, current) : peak;
+
+    private static string FormatPower(double? watts) => watts is double value ? $"{value:0} W" : string.Empty;
 
     private static double RecentAverage(List<double> history)
     {
@@ -919,7 +1065,7 @@ public partial class MainWindow : Window
 
     // Temperatures rarely leave the 30–90°C band, so a fixed 0–100 scale flattens them. Follow the
     // observed values instead, but keep at least a 20°C span so sensor jitter doesn't fill the graph.
-    private static (double min, double max) GetTemperatureRange(List<double> history)
+    private static (double min, double max) GetTemperatureRange(IReadOnlyList<double> history)
     {
         const double minimumSpan = 20;
         if (history.Count == 0)
@@ -939,18 +1085,15 @@ public partial class MainWindow : Window
         return (Math.Max(0, Math.Floor(low)), Math.Ceiling(high));
     }
 
-    private static void RenderSparkline(Canvas canvas, List<double> history, double minVal, double maxVal, Color strokeColor, Color fillColor, double? warningThreshold = null)
+    private static void RenderSparkline(Canvas canvas, IReadOnlyList<double> history, double minVal, double maxVal, Color strokeColor, Color fillColor, double? warningThreshold = null)
     {
-        canvas.Children.Clear();
-        if (history.Count < 2)
-        {
-            return;
-        }
-
+        SparklineShapes shapes = GetSparklineShapes(canvas, seriesCount: 1);
         double width = canvas.ActualWidth;
         double height = canvas.ActualHeight;
-        if (width <= 0 || height <= 0)
+        if (history.Count < 2 || width <= 0 || height <= 0)
         {
+            shapes.WarningLine.Visibility = Visibility.Collapsed;
+            shapes.Series[0].Hide();
             return;
         }
 
@@ -960,86 +1103,33 @@ public partial class MainWindow : Window
             range = 1;
         }
 
-        const double paddingY = 2;
-        double usableHeight = height - (paddingY * 2);
-
-        // 1. Warning threshold line, only when it falls inside the visible range
+        // Warning threshold line, only when it falls inside the visible range
         if (warningThreshold is double threshold && threshold > minVal && threshold < maxVal)
         {
-            double warnNorm = (threshold - minVal) / range;
-            double warnY = height - paddingY - (warnNorm * usableHeight);
-            var warnLine = new Line
-            {
-                X1 = 0,
-                Y1 = warnY,
-                X2 = width,
-                Y2 = warnY,
-                Stroke = new SolidColorBrush(Color.FromArgb(0x70, 0xFF, 0x98, 0x30)),
-                StrokeThickness = 0.8,
-                StrokeDashArray = new DoubleCollection { 3, 2 }
-            };
-            canvas.Children.Add(warnLine);
+            double warnY = height - SparklinePaddingY - ((threshold - minVal) / range * (height - (SparklinePaddingY * 2)));
+            shapes.WarningLine.X1 = 0;
+            shapes.WarningLine.X2 = width;
+            shapes.WarningLine.Y1 = warnY;
+            shapes.WarningLine.Y2 = warnY;
+            shapes.WarningLine.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            shapes.WarningLine.Visibility = Visibility.Collapsed;
         }
 
-        // 2. Area and trend line
-        double stepX = width / (history.Count - 1);
-        PointCollection linePoints = new();
-        PointCollection areaPoints = new() { new Point(0, height) };
-
-        for (int i = 0; i < history.Count; i++)
-        {
-            double norm = Math.Clamp((history[i] - minVal) / range, 0, 1);
-            double x = i * stepX;
-            double y = height - paddingY - (norm * usableHeight);
-            Point pt = new(x, y);
-            linePoints.Add(pt);
-            areaPoints.Add(pt);
-        }
-
-        areaPoints.Add(new Point(width, height));
-
-        var polygon = new Polygon
-        {
-            Points = areaPoints,
-            Fill = new LinearGradientBrush
-            {
-                StartPoint = new Point(0, 0),
-                EndPoint = new Point(0, 1),
-                GradientStops = new GradientStopCollection
-                {
-                    new GradientStop(fillColor, 0.0),
-                    new GradientStop(Color.FromArgb(0, fillColor.R, fillColor.G, fillColor.B), 1.0)
-                }
-            }
-        };
-
-        var polyline = new Polyline
-        {
-            Points = linePoints,
-            Stroke = new SolidColorBrush(strokeColor),
-            StrokeThickness = 1.8,
-            StrokeLineJoin = PenLineJoin.Round,
-            StrokeEndLineCap = PenLineCap.Round,
-            StrokeStartLineCap = PenLineCap.Round
-        };
-
-        canvas.Children.Add(polygon);
-        canvas.Children.Add(polyline);
+        shapes.Series[0].Update(history, width, height, value => (value - minVal) / range, strokeColor, fillColor);
     }
 
-    private static void RenderDualSparkline(Canvas canvas, List<double> history1, List<double> history2, Color downColor, Color upColor)
+    private static void RenderDualSparkline(Canvas canvas, IReadOnlyList<double> history1, IReadOnlyList<double> history2, Color downColor, Color upColor)
     {
-        canvas.Children.Clear();
-        int count = Math.Max(history1.Count, history2.Count);
-        if (count < 2)
-        {
-            return;
-        }
-
+        SparklineShapes shapes = GetSparklineShapes(canvas, seriesCount: 2);
         double width = canvas.ActualWidth;
         double height = canvas.ActualHeight;
-        if (width <= 0 || height <= 0)
+        if (Math.Max(history1.Count, history2.Count) < 2 || width <= 0 || height <= 0)
         {
+            shapes.Series[0].Hide();
+            shapes.Series[1].Hide();
             return;
         }
 
@@ -1049,68 +1139,128 @@ public partial class MainWindow : Window
         // A 100 KB/s floor keeps idle background traffic from looking like activity.
         double maxVal = Math.Max(peakObserved * 1.25d, 100d);
 
-        DrawSinglePolyline(canvas, history1, width, height, maxVal, downColor, Color.FromArgb(0x30, downColor.R, downColor.G, downColor.B), isDashed: false);
-        DrawSinglePolyline(canvas, history2, width, height, maxVal, upColor, Color.FromArgb(0x20, upColor.R, upColor.G, upColor.B), isDashed: true);
+        UpdateOrHide(shapes.Series[0], history1, width, height, maxVal, downColor, Color.FromArgb(0x30, downColor.R, downColor.G, downColor.B));
+        UpdateOrHide(shapes.Series[1], history2, width, height, maxVal, upColor, Color.FromArgb(0x20, upColor.R, upColor.G, upColor.B));
     }
 
-    private static void DrawSinglePolyline(Canvas canvas, List<double> history, double width, double height, double maxVal, Color strokeColor, Color fillColor, bool isDashed)
+    private static void UpdateOrHide(SparklineSeries series, IReadOnlyList<double> history, double width, double height, double maxVal, Color strokeColor, Color fillColor)
     {
         if (history.Count < 2)
         {
+            series.Hide();
             return;
         }
 
-        double stepX = width / (history.Count - 1);
-        const double paddingY = 2;
-        double usableHeight = height - (paddingY * 2);
+        series.Update(history, width, height, value => value / maxVal, strokeColor, fillColor);
+    }
 
-        PointCollection linePoints = new();
-        PointCollection areaPoints = new() { new Point(0, height) };
+    private const double SparklinePaddingY = 2;
 
-        for (int i = 0; i < history.Count; i++)
+    private static readonly Brush WarningLineBrush = CreateFrozenBrush(Color.FromArgb(0x70, 0xFF, 0x98, 0x30));
+
+    // A graph's shapes are created the first time it is drawn and kept on the canvas (in Tag); later
+    // redraws only replace their points and colours.
+    private static SparklineShapes GetSparklineShapes(Canvas canvas, int seriesCount)
+    {
+        if (canvas.Tag is SparklineShapes existing)
         {
-            double norm = Math.Clamp(history[i] / maxVal, 0, 1);
-            double x = i * stepX;
-            double y = height - paddingY - (norm * usableHeight);
-            Point pt = new(x, y);
-            linePoints.Add(pt);
-            areaPoints.Add(pt);
+            return existing;
         }
 
-        areaPoints.Add(new Point(width, height));
-
-        var polygon = new Polygon
+        canvas.Children.Clear();
+        var warningLine = new Line
         {
-            Points = areaPoints,
-            Fill = new LinearGradientBrush
+            Stroke = WarningLineBrush,
+            StrokeThickness = 0.8,
+            StrokeDashArray = new DoubleCollection { 3, 2 },
+            Visibility = Visibility.Collapsed
+        };
+        canvas.Children.Add(warningLine);
+
+        var series = new SparklineSeries[seriesCount];
+        for (int i = 0; i < seriesCount; i++)
+        {
+            // The second series of the network graph (upload) is dashed.
+            series[i] = new SparklineSeries(canvas, dashed: i == 1);
+        }
+
+        var shapes = new SparklineShapes(warningLine, series);
+        canvas.Tag = shapes;
+        return shapes;
+    }
+
+    private sealed record SparklineShapes(Line WarningLine, SparklineSeries[] Series);
+
+    // One line with a gradient area underneath.
+    private sealed class SparklineSeries
+    {
+        private readonly Polygon area;
+        private readonly Polyline line;
+        private readonly SolidColorBrush stroke = new();
+        private readonly GradientStop fillTop = new(Colors.Transparent, 0.0);
+        private readonly GradientStop fillBottom = new(Colors.Transparent, 1.0);
+
+        public SparklineSeries(Canvas canvas, bool dashed)
+        {
+            area = new Polygon
             {
-                StartPoint = new Point(0, 0),
-                EndPoint = new Point(0, 1),
-                GradientStops = new GradientStopCollection
+                Fill = new LinearGradientBrush
                 {
-                    new GradientStop(fillColor, 0.0),
-                    new GradientStop(Color.FromArgb(0, fillColor.R, fillColor.G, fillColor.B), 1.0)
+                    StartPoint = new Point(0, 0),
+                    EndPoint = new Point(0, 1),
+                    GradientStops = new GradientStopCollection { fillTop, fillBottom }
                 }
+            };
+            line = new Polyline
+            {
+                Stroke = stroke,
+                StrokeThickness = 1.8,
+                StrokeLineJoin = PenLineJoin.Round,
+                StrokeEndLineCap = PenLineCap.Round,
+                StrokeStartLineCap = PenLineCap.Round
+            };
+            if (dashed)
+            {
+                line.StrokeDashArray = new DoubleCollection { 3, 2 };
             }
-        };
 
-        var polyline = new Polyline
-        {
-            Points = linePoints,
-            Stroke = new SolidColorBrush(strokeColor),
-            StrokeThickness = 1.8,
-            StrokeLineJoin = PenLineJoin.Round,
-            StrokeEndLineCap = PenLineCap.Round,
-            StrokeStartLineCap = PenLineCap.Round
-        };
-
-        if (isDashed)
-        {
-            polyline.StrokeDashArray = new DoubleCollection { 3, 2 };
+            canvas.Children.Add(area);
+            canvas.Children.Add(line);
         }
 
-        canvas.Children.Add(polygon);
-        canvas.Children.Add(polyline);
+        public void Hide()
+        {
+            area.Visibility = Visibility.Collapsed;
+            line.Visibility = Visibility.Collapsed;
+        }
+
+        // normalize maps a value to 0..1 of the graph height (clamped).
+        public void Update(IReadOnlyList<double> history, double width, double height, Func<double, double> normalize, Color strokeColor, Color fillColor)
+        {
+            double usableHeight = height - (SparklinePaddingY * 2);
+            double stepX = width / (history.Count - 1);
+            var linePoints = new PointCollection(history.Count);
+            var areaPoints = new PointCollection(history.Count + 2) { new Point(0, height) };
+            for (int i = 0; i < history.Count; i++)
+            {
+                double y = height - SparklinePaddingY - (Math.Clamp(normalize(history[i]), 0, 1) * usableHeight);
+                var point = new Point(i * stepX, y);
+                linePoints.Add(point);
+                areaPoints.Add(point);
+            }
+
+            areaPoints.Add(new Point(width, height));
+            linePoints.Freeze();
+            areaPoints.Freeze();
+
+            line.Points = linePoints;
+            area.Points = areaPoints;
+            stroke.Color = strokeColor;
+            fillTop.Color = fillColor;
+            fillBottom.Color = Color.FromArgb(0, fillColor.R, fillColor.G, fillColor.B);
+            area.Visibility = Visibility.Visible;
+            line.Visibility = Visibility.Visible;
+        }
     }
 
     private sealed record TelemetrySnapshot(
@@ -1118,9 +1268,11 @@ public partial class MainWindow : Window
         IReadOnlyList<DeviceBattery> Devices,
         SystemInfo System);
 
-    private static Brush CreateFrozenBrush(byte r, byte g, byte b)
+    private static Brush CreateFrozenBrush(byte r, byte g, byte b) => CreateFrozenBrush(Color.FromRgb(r, g, b));
+
+    private static Brush CreateFrozenBrush(Color color)
     {
-        var brush = new SolidColorBrush(Color.FromRgb(r, g, b));
+        var brush = new SolidColorBrush(color);
         brush.Freeze();
         return brush;
     }

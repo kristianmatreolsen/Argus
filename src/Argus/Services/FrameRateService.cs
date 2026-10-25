@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -10,6 +11,10 @@ public sealed class FrameRateService : IDisposable
 {
     private const string SessionName = "ArgusTelemetry";
     private static readonly TimeSpan StartupProbeTime = TimeSpan.FromSeconds(1.5);
+    private static readonly TimeSpan FpsWindow = TimeSpan.FromSeconds(1.25);
+    // 1% lows need enough frames to be meaningful, so they look at a longer window than the FPS value.
+    private static readonly TimeSpan OnePercentLowWindow = TimeSpan.FromSeconds(10);
+    private const int MinimumFramesForOnePercentLow = 100;
 
     private static readonly HashSet<string> ShellProcesses = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -24,7 +29,7 @@ public sealed class FrameRateService : IDisposable
     private FileStream? bundledPresentMonLock;
     private readonly Dictionary<uint, string> processNames = new();
     private readonly object sync = new();
-    private readonly Dictionary<string, Queue<DateTime>> frameTimes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Queue<Frame>> frameTimes = new(StringComparer.OrdinalIgnoreCase);
     private readonly CancellationTokenSource cancellation = new();
 
     public FrameRateService()
@@ -69,6 +74,7 @@ public sealed class FrameRateService : IDisposable
 
                 if (!candidate.Start())
                 {
+                    AppLog.Warn($"PresentMon did not start: {executable}");
                     candidate.Dispose();
                     continue;
                 }
@@ -79,6 +85,7 @@ public sealed class FrameRateService : IDisposable
                 await Task.Delay(StartupProbeTime, token);
                 if (candidate.HasExited)
                 {
+                    AppLog.Warn($"PresentMon exited right away (exit code {candidate.ExitCode}), trying the next one: {executable}");
                     candidate.Dispose();
                     continue;
                 }
@@ -94,6 +101,7 @@ public sealed class FrameRateService : IDisposable
                     process = candidate;
                 }
 
+                AppLog.Info($"Measuring FPS with PresentMon: {executable}");
                 return;
             }
             catch (OperationCanceledException)
@@ -105,10 +113,16 @@ public sealed class FrameRateService : IDisposable
 
                 return;
             }
-            catch (Exception)
+            catch (Exception exception)
             {
+                AppLog.Warn($"PresentMon could not be started: {executable}", exception);
                 candidate?.Dispose();
             }
+        }
+
+        if (!token.IsCancellationRequested)
+        {
+            AppLog.Warn("No working PresentMon found; FPS is unavailable");
         }
     }
 
@@ -117,24 +131,53 @@ public sealed class FrameRateService : IDisposable
     public FrameRateReading ReadFps()
     {
         string? application = UpdateForegroundApplication();
-        DateTime cutoff = DateTime.UtcNow.AddSeconds(-1.25d);
+        DateTime now = DateTime.UtcNow;
+        DateTime historyCutoff = now - OnePercentLowWindow;
+        DateTime fpsCutoff = now - FpsWindow;
         lock (sync)
         {
-            foreach (Queue<DateTime> times in frameTimes.Values)
+            foreach (Queue<Frame> queue in frameTimes.Values)
             {
-                while (times.Count > 0 && times.Peek() < cutoff)
+                while (queue.Count > 0 && queue.Peek().Time < historyCutoff)
                 {
-                    times.Dequeue();
+                    queue.Dequeue();
                 }
             }
 
-            if (application is null || !frameTimes.TryGetValue(application, out Queue<DateTime>? frames) || frames.Count == 0)
+            if (application is null || !frameTimes.TryGetValue(application, out Queue<Frame>? frames))
             {
-                return new FrameRateReading(0d, null);
+                return new FrameRateReading(0d, null, null);
             }
 
-            return new FrameRateReading(frames.Count / 1.25d, Path.GetFileNameWithoutExtension(application));
+            int recentFrames = frames.Count(frame => frame.Time >= fpsCutoff);
+            if (recentFrames == 0)
+            {
+                return new FrameRateReading(0d, null, null);
+            }
+
+            return new FrameRateReading(
+                recentFrames / FpsWindow.TotalSeconds,
+                OnePercentLow(frames),
+                Path.GetFileNameWithoutExtension(application));
         }
+    }
+
+    // The frame rate matching the slowest 1% of frame times (99th percentile) over the last 10 seconds:
+    // how smooth the game feels during its worst stutters, which an average hides.
+    private static double? OnePercentLow(IEnumerable<Frame> frames)
+    {
+        double[] frameTimesMs = frames
+            .Where(frame => frame.Milliseconds > 0)
+            .Select(frame => frame.Milliseconds!.Value)
+            .ToArray();
+        if (frameTimesMs.Length < MinimumFramesForOnePercentLow)
+        {
+            return null;
+        }
+
+        Array.Sort(frameTimesMs);
+        double slowFrameMs = frameTimesMs[(int)Math.Ceiling(frameTimesMs.Length * 0.99) - 1];
+        return 1000d / slowFrameMs;
     }
 
     // The app being measured is the one in the foreground. When that is Argus itself or the taskbar/Start
@@ -263,8 +306,12 @@ public sealed class FrameRateService : IDisposable
         target.Dispose();
     }
 
+    // PresentMon prints a CSV header followed by one line per frame. Column positions differ between
+    // versions, so the frame-time column is found by name: MsBetweenDisplayChange (time between frames
+    // shown on screen) when available, otherwise MsBetweenPresents.
     private async Task ReadOutputAsync(Process source, CancellationToken token)
     {
+        int frameTimeColumn = -1;
         try
         {
             while (!token.IsCancellationRequested)
@@ -275,21 +322,43 @@ public sealed class FrameRateService : IDisposable
                     break;
                 }
 
-                string? processName = ParseProcessName(line);
-                if (processName is null)
+                if (string.IsNullOrWhiteSpace(line))
                 {
                     continue;
                 }
 
-                lock (sync)
+                string[] fields = line.Split(',');
+                if (fields[0].Trim('"').Equals("Application", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (!frameTimes.TryGetValue(processName, out Queue<DateTime>? times))
+                    frameTimeColumn = FindColumn(fields, "MsBetweenDisplayChange");
+                    if (frameTimeColumn < 0)
                     {
-                        times = new Queue<DateTime>();
-                        frameTimes[processName] = times;
+                        frameTimeColumn = FindColumn(fields, "MsBetweenPresents");
                     }
 
-                    times.Enqueue(DateTime.UtcNow);
+                    continue;
+                }
+
+                string processName = fields[0].Trim().Trim('"');
+                if (!processName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                double? frameTimeMs = frameTimeColumn >= 0 && frameTimeColumn < fields.Length &&
+                    double.TryParse(fields[frameTimeColumn], NumberStyles.Float, CultureInfo.InvariantCulture, out double parsed)
+                    ? parsed
+                    : null;
+
+                lock (sync)
+                {
+                    if (!frameTimes.TryGetValue(processName, out Queue<Frame>? frames))
+                    {
+                        frames = new Queue<Frame>();
+                        frameTimes[processName] = frames;
+                    }
+
+                    frames.Enqueue(new Frame(DateTime.UtcNow, frameTimeMs));
                 }
             }
         }
@@ -323,16 +392,10 @@ public sealed class FrameRateService : IDisposable
         }
     }
 
-    private static string? ParseProcessName(string line)
-    {
-        if (string.IsNullOrWhiteSpace(line) || line.StartsWith("Application", StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
+    private static int FindColumn(string[] header, string name) =>
+        Array.FindIndex(header, field => field.Trim().Trim('"').Equals(name, StringComparison.OrdinalIgnoreCase));
 
-        string firstField = line.Split(',', 2)[0].Trim().Trim('"');
-        return firstField.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? firstField : null;
-    }
+    private readonly record struct Frame(DateTime Time, double? Milliseconds);
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
@@ -406,12 +469,14 @@ public sealed class FrameRateService : IDisposable
                 }
 
                 // Partial or modified file: replace it with the embedded copy and check again.
+                AppLog.Warn($"Bundled PresentMon at {path} did not match the embedded copy; replacing it");
                 stream.Dispose();
                 File.Delete(path);
             }
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            AppLog.Warn("Preparing the bundled PresentMon failed", exception);
         }
 
         return null;
@@ -467,4 +532,4 @@ public sealed class FrameRateService : IDisposable
     }
 }
 
-public sealed record FrameRateReading(double Fps, string? Application);
+public sealed record FrameRateReading(double Fps, double? OnePercentLow, string? Application);

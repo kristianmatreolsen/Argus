@@ -46,14 +46,8 @@ public sealed class HardwareMonitorService : IDisposable
     public HardwareReading Read()
     {
         double? cpuTemperature = null;
-        double? gpuTemperature = null;
-        double? gpuCoreTemperature = null;
-        double? gpuUsage = null;
-        double? vramUsagePercent = null;
-        double? vramUsedMb = null;
-        double? vramTotalMb = null;
-        double? vramFreeMb = null;
         double? cpuUsage = null;
+        var gpus = new List<GpuSensors>();
         var fans = new List<FanReading>();
         (double memoryUsagePercent, double memoryUsedGb, double memoryTotalGb) = GetMemoryDetails();
         NetworkSpeed networkSpeed = ReadNetworkSpeed();
@@ -64,18 +58,7 @@ public sealed class HardwareMonitorService : IDisposable
             {
                 foreach (IHardware hardware in computer.Hardware)
                 {
-                    ReadHardware(
-                        hardware,
-                        ref cpuTemperature,
-                        ref gpuTemperature,
-                        ref gpuCoreTemperature,
-                        ref gpuUsage,
-                        ref vramUsagePercent,
-                        ref vramUsedMb,
-                        ref vramTotalMb,
-                        ref vramFreeMb,
-                        fans,
-                        ref cpuUsage);
+                    ReadHardware(hardware, ref cpuTemperature, ref cpuUsage, gpus, fans);
                 }
             }
             catch (Exception)
@@ -87,28 +70,27 @@ public sealed class HardwareMonitorService : IDisposable
         cpuTemperature ??= ReadHwiNfoTemperature();
         FrameRateReading frameRate = frameRateService.ReadFps();
 
-        double? finalGpuTemp = gpuCoreTemperature ?? gpuTemperature;
-
-        if (vramUsedMb is null && vramTotalMb is not null && vramFreeMb is not null)
+        GpuSensors? gpu = SelectPrimaryGpu(gpus);
+        double? vramUsedMb = gpu?.VramUsedMb;
+        double? vramTotalMb = gpu?.VramTotalMb;
+        if (vramUsedMb is null && vramTotalMb is not null && gpu?.VramFreeMb is double vramFreeMb)
         {
             vramUsedMb = vramTotalMb - vramFreeMb;
         }
 
-        if (vramUsagePercent is null && vramUsedMb is not null && vramTotalMb is not null && vramTotalMb > 0)
+        double? vramUsagePercent = gpu?.VramUsagePercent;
+        if (vramUsagePercent is null && vramUsedMb is not null && vramTotalMb is > 0)
         {
             vramUsagePercent = (vramUsedMb / vramTotalMb) * 100d;
         }
 
-        double? vramUsedGb = vramUsedMb.HasValue ? vramUsedMb.Value / 1024d : null;
-        double? vramTotalGb = vramTotalMb.HasValue ? vramTotalMb.Value / 1024d : null;
-
         return new HardwareReading(
             cpuTemperature,
             cpuUsage,
-            finalGpuTemp,
-            gpuUsage,
-            vramUsedGb,
-            vramTotalGb,
+            gpu?.CoreTemperature ?? gpu?.OtherTemperature,
+            gpu?.Load,
+            vramUsedMb / 1024d,
+            vramTotalMb / 1024d,
             vramUsagePercent,
             memoryUsagePercent,
             memoryUsedGb,
@@ -133,16 +115,17 @@ public sealed class HardwareMonitorService : IDisposable
     private static void ReadHardware(
         IHardware hardware,
         ref double? cpuTemperature,
-        ref double? gpuTemperature,
-        ref double? gpuCoreTemperature,
-        ref double? gpuUsage,
-        ref double? vramUsagePercent,
-        ref double? vramUsedMb,
-        ref double? vramTotalMb,
-        ref double? vramFreeMb,
-        List<FanReading> fans,
-        ref double? cpuUsage)
+        ref double? cpuUsage,
+        List<GpuSensors> gpus,
+        List<FanReading> fans)
     {
+        GpuSensors? gpu = null;
+        if (hardware.HardwareType is HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel)
+        {
+            gpu = new GpuSensors(hardware.HardwareType);
+            gpus.Add(gpu);
+        }
+
         try
         {
             hardware.Update();
@@ -167,15 +150,15 @@ public sealed class HardwareMonitorService : IDisposable
                             cpuTemperature = Max(cpuTemperature, value);
                         }
                     }
-                    else if (hardware.HardwareType is HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel)
+                    else if (gpu is not null)
                     {
                         if (sensor.Name.Contains("GPU Core", StringComparison.OrdinalIgnoreCase))
                         {
-                            gpuCoreTemperature = Max(gpuCoreTemperature, value);
+                            gpu.CoreTemperature = Max(gpu.CoreTemperature, value);
                         }
                         else
                         {
-                            gpuTemperature = Max(gpuTemperature, value);
+                            gpu.OtherTemperature = Max(gpu.OtherTemperature, value);
                         }
                     }
                 }
@@ -188,37 +171,46 @@ public sealed class HardwareMonitorService : IDisposable
                             cpuUsage = value;
                         }
                     }
-                    else if (hardware.HardwareType is HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel)
+                    else if (gpu is not null)
                     {
                         if (sensor.Name.Contains("GPU Core", StringComparison.OrdinalIgnoreCase) ||
                             sensor.Name.Equals("GPU", StringComparison.OrdinalIgnoreCase) ||
                             sensor.Name.Contains("D3D 3D", StringComparison.OrdinalIgnoreCase))
                         {
-                            gpuUsage = value;
+                            gpu.Load = value;
                         }
-                        else if (sensor.Name.Contains("GPU Memory", StringComparison.OrdinalIgnoreCase) ||
-                                 sensor.Name.Contains("Memory Controller", StringComparison.OrdinalIgnoreCase))
+                        // "GPU Memory" is VRAM in use; "GPU Memory Controller" is bandwidth and must not match.
+                        else if (sensor.Name.Equals("GPU Memory", StringComparison.OrdinalIgnoreCase))
                         {
-                            vramUsagePercent = value;
+                            gpu.VramUsagePercent = value;
                         }
                     }
                 }
                 else if (sensor.SensorType is SensorType.SmallData or SensorType.Data)
                 {
-                    if (hardware.HardwareType is HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel)
+                    if (gpu is not null)
                     {
-                        if (sensor.Name.Contains("GPU Memory Used", StringComparison.OrdinalIgnoreCase) ||
-                            sensor.Name.Contains("D3D Dedicated Memory Used", StringComparison.OrdinalIgnoreCase))
+                        // Prefer the driver-reported "GPU Memory *" values; D3D dedicated memory is the fallback
+                        // (e.g. Intel GPUs only report the D3D figures).
+                        if (sensor.Name.Equals("GPU Memory Used", StringComparison.OrdinalIgnoreCase))
                         {
-                            vramUsedMb = value;
+                            gpu.VramUsedMb = value;
                         }
-                        else if (sensor.Name.Contains("GPU Memory Total", StringComparison.OrdinalIgnoreCase))
+                        else if (sensor.Name.Equals("GPU Memory Total", StringComparison.OrdinalIgnoreCase))
                         {
-                            vramTotalMb = value;
+                            gpu.VramTotalMb = value;
                         }
-                        else if (sensor.Name.Contains("GPU Memory Free", StringComparison.OrdinalIgnoreCase))
+                        else if (sensor.Name.Equals("GPU Memory Free", StringComparison.OrdinalIgnoreCase))
                         {
-                            vramFreeMb = value;
+                            gpu.VramFreeMb = value;
+                        }
+                        else if (sensor.Name.Equals("D3D Dedicated Memory Used", StringComparison.OrdinalIgnoreCase))
+                        {
+                            gpu.VramUsedMb ??= value;
+                        }
+                        else if (sensor.Name.Equals("D3D Dedicated Memory Total", StringComparison.OrdinalIgnoreCase))
+                        {
+                            gpu.VramTotalMb ??= value;
                         }
                     }
                 }
@@ -241,23 +233,40 @@ public sealed class HardwareMonitorService : IDisposable
         {
             foreach (IHardware child in hardware.SubHardware)
             {
-                ReadHardware(
-                    child,
-                    ref cpuTemperature,
-                    ref gpuTemperature,
-                    ref gpuCoreTemperature,
-                    ref gpuUsage,
-                    ref vramUsagePercent,
-                    ref vramUsedMb,
-                    ref vramTotalMb,
-                    ref vramFreeMb,
-                    fans,
-                    ref cpuUsage);
+                ReadHardware(child, ref cpuTemperature, ref cpuUsage, gpus, fans);
             }
         }
         catch (Exception)
         {
         }
+    }
+
+    // With an integrated and a dedicated GPU (most laptops, and desktops with an iGPU enabled), show the
+    // dedicated one: it has the most dedicated memory (an iGPU only reserves a few hundred MB). Ties go to
+    // NVIDIA, then AMD, then Intel.
+    private static GpuSensors? SelectPrimaryGpu(List<GpuSensors> gpus)
+    {
+        return gpus
+            .OrderByDescending(gpu => gpu.VramTotalMb ?? 0)
+            .ThenBy(gpu => gpu.Type switch
+            {
+                HardwareType.GpuNvidia => 0,
+                HardwareType.GpuAmd => 1,
+                _ => 2
+            })
+            .FirstOrDefault();
+    }
+
+    private sealed class GpuSensors(HardwareType type)
+    {
+        public HardwareType Type { get; } = type;
+        public double? CoreTemperature { get; set; }
+        public double? OtherTemperature { get; set; }
+        public double? Load { get; set; }
+        public double? VramUsagePercent { get; set; }
+        public double? VramUsedMb { get; set; }
+        public double? VramTotalMb { get; set; }
+        public double? VramFreeMb { get; set; }
     }
 
     private static bool IsValidTemperature(float value) => value >= 10 && value <= 130;

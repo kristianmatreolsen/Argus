@@ -2,7 +2,8 @@ using System.Globalization;
 
 namespace Argus.Models;
 
-public sealed record FanReading(string Name, double Rpm, string Unit = "RPM");
+// Id is the sensor's stable identifier (e.g. "/lpc/nct6701d/0/fan/2"); custom fan names are keyed on it.
+public sealed record FanReading(string Id, string Name, double Rpm, string Unit = "RPM");
 
 public sealed record SystemInfo(
     string MachineName,
@@ -47,9 +48,36 @@ public sealed record DriveFreeSpace(string Name, long FreeSpaceGb, long TotalSiz
     };
 }
 
+// A physical drive's SMART health. Colours follow the drive's own warning/critical temperature limits
+// when it reports them (NVMe does), otherwise 60/70°C.
+public sealed record DiskHealth(string Name, double? Temperature, double? WarningTemperature, double? CriticalTemperature, double? LifePercent)
+{
+    public string TemperatureText => Temperature is double value ? $"{value:0}°C" : "--";
+
+    public string LifeText => LifePercent is double value ? $"{value:0}% life" : string.Empty;
+
+    public string TemperatureBrush => Temperature switch
+    {
+        double value when value >= (CriticalTemperature ?? 70) => "#EF4444",
+        double value when value >= (WarningTemperature ?? 60) => "#F59E0B",
+        double => "#10B981",
+        _ => "#94A3B8"
+    };
+
+    public string LifeBrush => LifePercent switch
+    {
+        < 20 => "#EF4444",
+        < 50 => "#F59E0B",
+        _ => "#94A3B8"
+    };
+}
+
 public sealed record DeviceBattery(string Name, int? Percentage, string Status)
 {
     public string DisplayPercentage => Percentage is int value ? $"{value}%" : "--";
+
+    // "Connected" is the normal case, so only unusual states (e.g. "Last verified") are shown.
+    public string StatusText => Status == "Connected" ? string.Empty : Status;
 
     public string PercentageBrush => Percentage switch
     {

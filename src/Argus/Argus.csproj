@@ -7,6 +7,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Argus</AssemblyName>
+    <!-- Local builds are marked as dev builds; the release workflow passes the version from the git tag. -->
+    <Version>0.0.0-dev</Version>
     <RootNamespace>Argus</RootNamespace>
     <ApplicationIcon>ArgusIcon.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
@@ -20,11 +22,39 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
 
+  <!--
+    Bundled PresentMon (MIT, Intel) so FPS works without AMD Software, RivaTuner or FrameView installed.
+    The pinned release is downloaded at build time, checked against the SHA-256 GitHub publishes for it,
+    and embedded in Argus.exe. Offline builds continue without it (FPS then needs an installed PresentMon).
+  -->
+  <PropertyGroup>
+    <PresentMonVersion>2.5.1</PresentMonVersion>
+    <PresentMonSha256>9BEC3083069F58F911E6A512F4806DB51A27BD096103087BC1D05EF54C80A191</PresentMonSha256>
+    <PresentMonUrl>https://github.com/GameTechDev/PresentMon/releases/download/v$(PresentMonVersion)/PresentMon-$(PresentMonVersion)-x64.exe</PresentMonUrl>
+    <PresentMonDir>$(MSBuildProjectDirectory)\obj\presentmon\</PresentMonDir>
+    <PresentMonPath>$(PresentMonDir)PresentMon-$(PresentMonVersion)-x64.exe</PresentMonPath>
+  </PropertyGroup>
+
+  <Target Name="DownloadPresentMon" Condition="!Exists('$(PresentMonPath)')">
+    <DownloadFile SourceUrl="$(PresentMonUrl)" DestinationFolder="$(PresentMonDir)" ContinueOnError="WarnAndContinue" />
+    <GetFileHash Files="$(PresentMonPath)" Algorithm="SHA256" Condition="Exists('$(PresentMonPath)')">
+      <Output TaskParameter="Hash" PropertyName="DownloadedPresentMonSha256" />
+    </GetFileHash>
+    <Delete Files="$(PresentMonPath)" Condition="Exists('$(PresentMonPath)') And '$(DownloadedPresentMonSha256)' != '$(PresentMonSha256)'" />
+    <Error Text="Downloaded PresentMon does not match the expected SHA-256 ($(DownloadedPresentMonSha256))." Condition="'$(DownloadedPresentMonSha256)' != '' And '$(DownloadedPresentMonSha256)' != '$(PresentMonSha256)'" />
+  </Target>
+
+  <Target Name="EmbedPresentMon" BeforeTargets="BeforeBuild" DependsOnTargets="DownloadPresentMon">
+    <ItemGroup>
+      <EmbeddedResource Include="$(PresentMonPath)" LogicalName="PresentMon.exe" Condition="Exists('$(PresentMonPath)')" />
+    </ItemGroup>
+    <Warning Text="PresentMon could not be downloaded; this build has no bundled PresentMon." Condition="!Exists('$(PresentMonPath)')" />
+  </Target>
+
   <ItemGroup>
     <PackageReference Include="Hardcodet.NotifyIcon.Wpf" Version="2.0.1" />
     <PackageReference Include="HidSharp" Version="2.6.4" />
     <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
-    <PackageReference Include="System.Management" Version="10.0.2" />
     <PackageReference Include="System.Drawing.Common" Version="8.0.10" />
   </ItemGroup>
 

@@ -4,8 +4,61 @@
         Title="Argus" Width="420" Height="680"
         Icon="{StaticResource ArgusLogoSource}"
         Background="#0F172A" Foreground="#F8FAFC"
+        BorderBrush="#334155" BorderThickness="1"
+        WindowStyle="None" ResizeMode="NoResize"
         ShowInTaskbar="False"
-        WindowStartupLocation="Manual">
+        WindowStartupLocation="Manual"
+        SourceInitialized="Window_SourceInitialized"
+        Deactivated="Window_Deactivated"
+        PreviewKeyDown="Window_PreviewKeyDown">
+
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="0" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0" UseAeroCaptionButtons="False" />
+    </WindowChrome.WindowChrome>
+
+    <Window.Resources>
+        <!-- Small icon buttons in the header (pin, hide). -->
+        <Style x:Key="HeaderIconButton" TargetType="{x:Type Button}">
+            <Setter Property="Foreground" Value="#94A3B8" />
+            <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Width" Value="30" />
+            <Setter Property="Height" Value="28" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="border" Background="Transparent" CornerRadius="6">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="#1E293B" />
+                                <Setter Property="Foreground" Value="#F8FAFC" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Thin drive usage bar; the bar colour comes from Foreground. -->
+        <Style x:Key="UsageBar" TargetType="{x:Type ProgressBar}">
+            <Setter Property="Height" Value="4" />
+            <Setter Property="Minimum" Value="0" />
+            <Setter Property="Maximum" Value="100" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ProgressBar}">
+                        <Grid>
+                            <Border x:Name="PART_Track" Background="#334155" CornerRadius="2" />
+                            <Border x:Name="PART_Indicator" Background="{TemplateBinding Foreground}" CornerRadius="2" HorizontalAlignment="Left" />
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
 
     <Grid Margin="20,20,20,20">
         <Grid.RowDefinitions>
@@ -15,12 +68,17 @@
         </Grid.RowDefinitions>
 
         <!-- Header -->
-        <DockPanel Margin="0,0,0,16">
+        <DockPanel Margin="0,0,0,16" Background="Transparent" MouseLeftButtonDown="Header_MouseLeftButtonDown"
+                   ToolTip="Drag to move; moving the window pins it">
+            <Button DockPanel.Dock="Right" Style="{StaticResource HeaderIconButton}" Content="&#xE8BB;" Margin="4,0,0,0"
+                    ToolTip="Hide (Esc)" Click="HideButton_Click" />
+            <Button x:Name="PinButton" DockPanel.Dock="Right" Style="{StaticResource HeaderIconButton}" Content="&#xE718;" Margin="4,0,0,0"
+                    Click="PinButton_Click" />
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                 <Image Source="{StaticResource ArgusLogoSource}" Width="24" Height="24" Margin="0,0,10,0" VerticalAlignment="Center" />
                 <TextBlock Text="ARGUS" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC" FontFamily="Segoe UI" VerticalAlignment="Center" />
             </StackPanel>
-            <Button DockPanel.Dock="Right" HorizontalAlignment="Right" VerticalAlignment="Center" Click="SettingsButton_Click" Background="Transparent" BorderThickness="0" Cursor="Hand" ToolTip="Open Settings">
+            <Button DockPanel.Dock="Right" HorizontalAlignment="Right" VerticalAlignment="Center" Click="SettingsButton_Click" Background="Transparent" BorderThickness="0" Padding="0" Cursor="Hand" ToolTip="Open Settings">
                 <Border Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="6" Padding="8,5">
                     <StackPanel Orientation="Horizontal">
                         <Path Data="M 12,15.5 A 3.5,3.5 0 1,1 12,8.5 A 3.5,3.5 0 0,1 12,15.5 M 19.4,13 C 19.5,12.7 19.5,12.3 19.4,12 L 21.5,10.4 C 21.7,10.2 21.8,9.9 21.6,9.7 L 19.6,6.2 C 19.5,6 19.2,5.9 19,6 L 16.5,7 C 16,6.6 15.4,6.3 14.8,6.1 L 14.4,3.4 C 14.4,3.2 14.2,3 13.9,3 L 9.9,3 C 9.7,3 9.5,3.2 9.5,3.4 L 9.1,6.1 C 8.5,6.3 7.9,6.6 7.4,7 L 4.9,6 C 4.7,5.9 4.4,6 4.3,6.2 L 2.3,9.7 C 2.1,9.9 2.2,10.2 2.4,10.4 L 4.5,12 C 4.4,12.3 4.4,12.7 4.5,13 L 2.4,14.6 C 2.2,14.8 2.1,15.1 2.3,15.3 L 4.3,18.8 C 4.4,19 4.7,19.1 4.9,19 L 7.4,18 C 7.9,18.4 8.5,18.7 9.1,18.9 L 9.5,21.6 C 9.5,21.8 9.7,22 9.9,22 L 13.9,22 C 14.2,22 14.4,21.8 14.4,21.6 L 14.8,18.9 C 15.4,18.7 16,18.4 16.5,18 L 19,19 C 19.2,19.1 19.5,19 19.6,18.8 L 21.6,15.3 C 21.8,15.1 21.7,14.8 21.5,14.6 Z"
@@ -31,13 +89,25 @@
             </Button>
         </DockPanel>
 
+        <!-- Explains why CPU temperature / motherboard fans are unavailable (no admin rights or no PawnIO driver) -->
+        <Border x:Name="SensorAccessBanner" Grid.Row="1" Background="#172036" BorderBrush="#38BDF8" BorderThickness="1" CornerRadius="8"
+                Padding="12,8" Margin="0,0,0,14" Visibility="Collapsed">
+            <DockPanel>
+                <Button DockPanel.Dock="Right" Content="✕" Background="Transparent" Foreground="#94A3B8" Padding="6,2" FontSize="11"
+                        VerticalAlignment="Center" ToolTip="Hide until Argus restarts" Click="DismissSensorAccessBanner_Click" />
+                <Button x:Name="SensorAccessButton" DockPanel.Dock="Right" Padding="10,4" FontSize="11" Margin="10,0,6,0"
+                        VerticalAlignment="Center" Click="SensorAccessButton_Click" />
+                <TextBlock x:Name="SensorAccessText" Foreground="#E2E8F0" FontSize="11" TextWrapping="Wrap" VerticalAlignment="Center" />
+            </DockPanel>
+        </Border>
+
         <!-- Main Scrollable Section -->
         <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,4,0">
             <StackPanel x:Name="MainSectionContainer">
 
                 <!-- METRICS SECTION (Collapsible & Draggable) -->
                 <StackPanel x:Name="MetricsSection" Margin="0,0,0,14">
-                    <Border x:Name="MetricsSectionHeader" Tag="MetricsSection" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="8" Padding="12,8" Margin="0,0,0,8"
+                    <Border x:Name="MetricsSectionHeader" Tag="MetricsSection" Background="Transparent" Padding="2,4" Margin="0,0,0,6"
                             AllowDrop="True" Cursor="Hand" ToolTip="Click to expand/collapse, drag to reorder section"
                             PreviewMouseLeftButtonDown="SectionHeader_PreviewMouseLeftButtonDown"
                             PreviewMouseMove="SectionHeader_PreviewMouseMove"
@@ -63,7 +133,7 @@
                     <!-- Metric Cards Grid (2x4) -->
                     <UniformGrid x:Name="MetricsGrid" Columns="2" Margin="-4,0,-4,0">
                         <!-- ROW 1: GPU -->
-                        <Border x:Name="GpuTemperatureCard" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="10" Padding="12,8" Margin="4" Height="78"
+                        <Border x:Name="GpuTemperatureCard" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="10" Padding="12,8" Margin="4" Height="96"
                                 AllowDrop="True" Cursor="Hand"
                                 PreviewMouseLeftButtonDown="Card_PreviewMouseLeftButtonDown"
                                 PreviewMouseMove="Card_PreviewMouseMove"
@@ -71,15 +141,21 @@
                                 DragOver="Card_DragOver"
                                 Drop="Card_Drop">
                             <Grid>
-                                <Canvas x:Name="GpuTempSparklineCanvas" ClipToBounds="True" SizeChanged="SparklineCanvas_SizeChanged" VerticalAlignment="Stretch" HorizontalAlignment="Stretch" />
+                                <Canvas x:Name="GpuTempSparklineCanvas" ClipToBounds="True" SizeChanged="SparklineCanvas_SizeChanged" VerticalAlignment="Bottom" Height="36" HorizontalAlignment="Stretch" />
                                 <StackPanel IsHitTestVisible="False">
-                                    <TextBlock Text="GPU TEMP" Foreground="#94A3B8" FontSize="10" FontWeight="Bold" />
-                                    <TextBlock x:Name="GpuTempText" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,6,0,0" />
+                                    <DockPanel>
+                                        <TextBlock x:Name="GpuTempPeakText" DockPanel.Dock="Right" Foreground="#64748B" FontSize="9.5" Margin="6,0,0,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="GPU TEMP" Foreground="#94A3B8" FontSize="10" FontWeight="Bold" />
+                                    </DockPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
+                                        <TextBlock x:Name="GpuTempText" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC" />
+                                        <TextBlock x:Name="GpuPowerText" Foreground="#64748B" FontSize="11" FontWeight="SemiBold" Margin="7,0,0,3" VerticalAlignment="Bottom" />
+                                    </StackPanel>
                                 </StackPanel>
                             </Grid>
                         </Border>
 
-                        <Border x:Name="GpuLoadCard" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="10" Padding="12,8" Margin="4" Height="78"
+                        <Border x:Name="GpuLoadCard" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="10" Padding="12,8" Margin="4" Height="96"
                                 AllowDrop="True" Cursor="Hand"
                                 PreviewMouseLeftButtonDown="Card_PreviewMouseLeftButtonDown"
                                 PreviewMouseMove="Card_PreviewMouseMove"
@@ -87,16 +163,19 @@
                                 DragOver="Card_DragOver"
                                 Drop="Card_Drop">
                             <Grid>
-                                <Canvas x:Name="GpuLoadSparklineCanvas" ClipToBounds="True" SizeChanged="SparklineCanvas_SizeChanged" VerticalAlignment="Stretch" HorizontalAlignment="Stretch" />
+                                <Canvas x:Name="GpuLoadSparklineCanvas" ClipToBounds="True" SizeChanged="SparklineCanvas_SizeChanged" VerticalAlignment="Bottom" Height="36" HorizontalAlignment="Stretch" />
                                 <StackPanel IsHitTestVisible="False">
                                     <TextBlock Text="GPU LOAD" Foreground="#94A3B8" FontSize="10" FontWeight="Bold" />
-                                    <TextBlock x:Name="GpuLoadText" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,6,0,0" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
+                                        <TextBlock x:Name="GpuLoadText" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC" />
+                                        <TextBlock x:Name="VramText" Foreground="#64748B" FontSize="11" FontWeight="SemiBold" Margin="7,0,0,3" VerticalAlignment="Bottom" />
+                                    </StackPanel>
                                 </StackPanel>
                             </Grid>
                         </Border>
 
                         <!-- ROW 2: CPU -->
-                        <Border x:Name="CpuTemperatureCard" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="10" Padding="12,8" Margin="4" Height="78"
+                        <Border x:Name="CpuTemperatureCard" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="10" Padding="12,8" Margin="4" Height="96"
                                 AllowDrop="True" Cursor="Hand"
                                 PreviewMouseLeftButtonDown="Card_PreviewMouseLeftButtonDown"
                                 PreviewMouseMove="Card_PreviewMouseMove"
@@ -104,15 +183,21 @@
                                 DragOver="Card_DragOver"
                                 Drop="Card_Drop">
                             <Grid>
-                                <Canvas x:Name="CpuTempSparklineCanvas" ClipToBounds="True" SizeChanged="SparklineCanvas_SizeChanged" VerticalAlignment="Stretch" HorizontalAlignment="Stretch" />
+                                <Canvas x:Name="CpuTempSparklineCanvas" ClipToBounds="True" SizeChanged="SparklineCanvas_SizeChanged" VerticalAlignment="Bottom" Height="36" HorizontalAlignment="Stretch" />
                                 <StackPanel IsHitTestVisible="False">
-                                    <TextBlock Text="CPU TEMP" Foreground="#94A3B8" FontSize="10" FontWeight="Bold" />
-                                    <TextBlock x:Name="CpuTempText" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,6,0,0" />
+                                    <DockPanel>
+                                        <TextBlock x:Name="CpuTempPeakText" DockPanel.Dock="Right" Foreground="#64748B" FontSize="9.5" Margin="6,0,0,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="CPU TEMP" Foreground="#94A3B8" FontSize="10" FontWeight="Bold" />
+                                    </DockPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
+                                        <TextBlock x:Name="CpuTempText" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC" />
+                                        <TextBlock x:Name="CpuPowerText" Foreground="#64748B" FontSize="11" FontWeight="SemiBold" Margin="7,0,0,3" VerticalAlignment="Bottom" />
+                                    </StackPanel>
                                 </StackPanel>
                             </Grid>
                         </Border>
 
-                        <Border x:Name="CpuLoadCard" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="10" Padding="12,8" Margin="4" Height="78"
+                        <Border x:Name="CpuLoadCard" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="10" Padding="12,8" Margin="4" Height="96"
                                 AllowDrop="True" Cursor="Hand"
                                 PreviewMouseLeftButtonDown="Card_PreviewMouseLeftButtonDown"
                                 PreviewMouseMove="Card_PreviewMouseMove"
@@ -120,16 +205,16 @@
                                 DragOver="Card_DragOver"
                                 Drop="Card_Drop">
                             <Grid>
-                                <Canvas x:Name="CpuLoadSparklineCanvas" ClipToBounds="True" SizeChanged="SparklineCanvas_SizeChanged" VerticalAlignment="Stretch" HorizontalAlignment="Stretch" />
+                                <Canvas x:Name="CpuLoadSparklineCanvas" ClipToBounds="True" SizeChanged="SparklineCanvas_SizeChanged" VerticalAlignment="Bottom" Height="36" HorizontalAlignment="Stretch" />
                                 <StackPanel IsHitTestVisible="False">
                                     <TextBlock Text="CPU LOAD" Foreground="#94A3B8" FontSize="10" FontWeight="Bold" />
-                                    <TextBlock x:Name="CpuUsageText" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,6,0,0" />
+                                    <TextBlock x:Name="CpuUsageText" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,3,0,0" />
                                 </StackPanel>
                             </Grid>
                         </Border>
 
                         <!-- ROW 3: MEMORY & NETWORK -->
-                        <Border x:Name="MemoryCard" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="10" Padding="12,8" Margin="4" Height="78"
+                        <Border x:Name="MemoryCard" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="10" Padding="12,8" Margin="4" Height="96"
                                 AllowDrop="True" Cursor="Hand"
                                 PreviewMouseLeftButtonDown="Card_PreviewMouseLeftButtonDown"
                                 PreviewMouseMove="Card_PreviewMouseMove"
@@ -137,16 +222,16 @@
                                 DragOver="Card_DragOver"
                                 Drop="Card_Drop">
                             <Grid>
-                                <Canvas x:Name="MemorySparklineCanvas" ClipToBounds="True" SizeChanged="SparklineCanvas_SizeChanged" VerticalAlignment="Stretch" HorizontalAlignment="Stretch" />
+                                <Canvas x:Name="MemorySparklineCanvas" ClipToBounds="True" SizeChanged="SparklineCanvas_SizeChanged" VerticalAlignment="Bottom" Height="36" HorizontalAlignment="Stretch" />
                                 <StackPanel IsHitTestVisible="False">
                                     <TextBlock Text="MEMORY" Foreground="#94A3B8" FontSize="10" FontWeight="Bold" />
-                                    <TextBlock x:Name="MemoryUsageText" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,6,0,0" />
+                                    <TextBlock x:Name="MemoryUsageText" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,3,0,0" />
                                 </StackPanel>
                             </Grid>
                         </Border>
 
                         <!-- CLEAN NETWORK CARD -->
-                        <Border x:Name="NetworkCard" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="10" Padding="12,8" Margin="4" Height="78"
+                        <Border x:Name="NetworkCard" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="10" Padding="12,8" Margin="4" Height="96"
                                 AllowDrop="True" Cursor="Hand"
                                 PreviewMouseLeftButtonDown="Card_PreviewMouseLeftButtonDown"
                                 PreviewMouseMove="Card_PreviewMouseMove"
@@ -154,10 +239,10 @@
                                 DragOver="Card_DragOver"
                                 Drop="Card_Drop">
                             <Grid>
-                                <Canvas x:Name="NetworkSparklineCanvas" ClipToBounds="True" SizeChanged="SparklineCanvas_SizeChanged" VerticalAlignment="Stretch" HorizontalAlignment="Stretch" />
+                                <Canvas x:Name="NetworkSparklineCanvas" ClipToBounds="True" SizeChanged="SparklineCanvas_SizeChanged" VerticalAlignment="Bottom" Height="36" HorizontalAlignment="Stretch" />
                                 <StackPanel IsHitTestVisible="False">
                                     <TextBlock Text="NETWORK" Foreground="#94A3B8" FontSize="10" FontWeight="Bold" Margin="0,0,0,1" />
-                                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                    <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
                                         <Ellipse Width="5" Height="5" Fill="#73BF69" VerticalAlignment="Center" Margin="0,0,4,0" />
                                         <TextBlock Text="↓ " Foreground="#73BF69" FontSize="11" FontWeight="Bold" VerticalAlignment="Center" />
                                         <TextBlock x:Name="NetDownText" FontSize="11" FontWeight="Bold" Foreground="#F8FAFC" VerticalAlignment="Center" Margin="0,0,8,0" />
@@ -171,7 +256,7 @@
                         </Border>
 
                         <!-- ROW 4: FPS & FAN SPEED -->
-                        <Border x:Name="FpsCard" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="10" Padding="12,8" Margin="4" Height="78"
+                        <Border x:Name="FpsCard" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="10" Padding="12,8" Margin="4" Height="96"
                                 AllowDrop="True" Cursor="Hand"
                                 PreviewMouseLeftButtonDown="Card_PreviewMouseLeftButtonDown"
                                 PreviewMouseMove="Card_PreviewMouseMove"
@@ -179,14 +264,21 @@
                                 DragOver="Card_DragOver"
                                 Drop="Card_Drop">
                             <Grid>
-                                <StackPanel IsHitTestVisible="False" VerticalAlignment="Center">
-                                    <TextBlock Text="FPS" Foreground="#94A3B8" FontSize="10" FontWeight="Bold" />
-                                    <TextBlock x:Name="FpsText" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,6,0,0" />
+                                <Canvas x:Name="FpsSparklineCanvas" ClipToBounds="True" SizeChanged="SparklineCanvas_SizeChanged" VerticalAlignment="Bottom" Height="36" HorizontalAlignment="Stretch" />
+                                <StackPanel IsHitTestVisible="False">
+                                    <DockPanel>
+                                        <TextBlock x:Name="FpsStatusText" DockPanel.Dock="Right" Foreground="#64748B" FontSize="9.5" Margin="6,0,0,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="FPS" Foreground="#94A3B8" FontSize="10" FontWeight="Bold" />
+                                    </DockPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
+                                        <TextBlock x:Name="FpsText" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC" />
+                                        <TextBlock x:Name="FpsLowText" Foreground="#64748B" FontSize="11" FontWeight="SemiBold" Margin="7,0,0,3" VerticalAlignment="Bottom" />
+                                    </StackPanel>
                                 </StackPanel>
                             </Grid>
                         </Border>
 
-                        <Border x:Name="FanSpeedCard" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="10" Padding="12,8" Margin="4" Height="78"
+                        <Border x:Name="FanSpeedCard" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="10" Padding="12,8" Margin="4" Height="96"
                                 AllowDrop="True" Cursor="Hand"
                                 PreviewMouseLeftButtonDown="Card_PreviewMouseLeftButtonDown"
                                 PreviewMouseMove="Card_PreviewMouseMove"
@@ -194,19 +286,31 @@
                                 DragOver="Card_DragOver"
                                 Drop="Card_Drop">
                             <Grid>
-                                <StackPanel IsHitTestVisible="False" VerticalAlignment="Center">
-                                    <TextBlock Text="FAN SPEED" Foreground="#94A3B8" FontSize="10" FontWeight="Bold" Margin="0,0,0,2" />
-                                    <TextBlock x:Name="FanText" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,2,0,0" />
-                                    <ScrollViewer x:Name="FansScroll" MaxHeight="38" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
+                                <!-- Hit-testable so the fan list can scroll; the card's Preview* drag handlers still fire. -->
+                                <StackPanel VerticalAlignment="Center">
+                                    <DockPanel Margin="0,0,0,3" IsHitTestVisible="False">
+                                        <TextBlock DockPanel.Dock="Right" Text="RPM" Foreground="#64748B" FontSize="8" FontWeight="Bold" VerticalAlignment="Center" />
+                                        <TextBlock Text="FAN SPEED" Foreground="#94A3B8" FontSize="10" FontWeight="Bold" />
+                                    </DockPanel>
+                                    <TextBlock x:Name="FanText" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,2,0,0" IsHitTestVisible="False" />
+                                    <!-- Two columns fit six fans (three rows) without scrolling; scroll only kicks in beyond eight. -->
+                                    <ScrollViewer x:Name="FansScroll" MaxHeight="56" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed" PreviewMouseWheel="FansScroll_PreviewMouseWheel">
                                         <ItemsControl x:Name="FansList">
+                                            <ItemsControl.ItemsPanel>
+                                                <ItemsPanelTemplate>
+                                                    <UniformGrid Columns="2" />
+                                                </ItemsPanelTemplate>
+                                            </ItemsControl.ItemsPanel>
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
-                                                    <TextBlock FontSize="9.5" FontWeight="SemiBold" Foreground="#F8FAFC" Margin="0,0">
-                                                        <Run Text="{Binding Name}" Foreground="#94A3B8" FontSize="8.5" />
-                                                        <Run Text=": " Foreground="#64748B" />
-                                                        <Run Text="{Binding Rpm, StringFormat='{}{0:0}'}" FontWeight="Bold" Foreground="#F8FAFC" />
-                                                        <Run Text="{Binding Unit, StringFormat=' {}'}" Foreground="#64748B" FontSize="8" />
-                                                    </TextBlock>
+                                                    <Grid Margin="0,0,8,2">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <TextBlock Text="{Binding Name}" Foreground="#94A3B8" FontSize="9" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                                                        <TextBlock Grid.Column="1" Text="{Binding Rpm, StringFormat='{}{0:0}', Mode=OneWay}" FontSize="9.5" FontWeight="Bold" Foreground="#F8FAFC" Margin="4,0,0,0" VerticalAlignment="Center" />
+                                                    </Grid>
                                                 </DataTemplate>
                                             </ItemsControl.ItemTemplate>
                                         </ItemsControl>
@@ -219,7 +323,7 @@
 
                 <!-- SYSTEM SECTION (Collapsible & Draggable) -->
                 <StackPanel x:Name="SystemSection" Margin="0,0,0,14">
-                    <Border x:Name="SystemSectionHeader" Tag="SystemSection" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="8" Padding="12,8" Margin="0,0,0,8"
+                    <Border x:Name="SystemSectionHeader" Tag="SystemSection" Background="Transparent" Padding="2,4" Margin="0,0,0,6"
                             AllowDrop="True" Cursor="Hand" ToolTip="Click to expand/collapse, drag to reorder section"
                             PreviewMouseLeftButtonDown="SectionHeader_PreviewMouseLeftButtonDown"
                             PreviewMouseMove="SectionHeader_PreviewMouseMove"
@@ -255,24 +359,37 @@
                             </UniformGrid>
                         </Border>
 
-                        <!-- DRIVES -->
+                        <!-- DRIVES (volumes: free space) -->
                         <ItemsControl x:Name="DrivesList">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
                                     <Border Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="8" Padding="12,8" Margin="0,0,0,6">
-                                        <Grid>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <StackPanel VerticalAlignment="Center">
-                                                <TextBlock Text="{Binding DisplayName}" Foreground="#F8FAFC" FontWeight="SemiBold" FontSize="12" />
-                                                <TextBlock Text="{Binding FreeSpaceText}" Foreground="#64748B" FontSize="10" Margin="0,1,0,0" />
-                                            </StackPanel>
-                                            <Border Grid.Column="1" Background="{Binding BadgeBackground}" BorderBrush="{Binding BadgeBorder}" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="10,0,0,0" VerticalAlignment="Center">
-                                                <TextBlock Text="{Binding DisplayBadge}" Foreground="{Binding PercentageBrush}" FontWeight="Bold" FontSize="11" />
-                                            </Border>
-                                        </Grid>
+                                        <StackPanel>
+                                            <DockPanel>
+                                                <TextBlock DockPanel.Dock="Right" Text="{Binding DisplayBadge}" Foreground="{Binding PercentageBrush}" FontWeight="Bold" FontSize="11" VerticalAlignment="Center" />
+                                                <TextBlock VerticalAlignment="Center" TextTrimming="CharacterEllipsis">
+                                                    <Run Text="{Binding DisplayName, Mode=OneWay}" Foreground="#F8FAFC" FontWeight="SemiBold" FontSize="12" />
+                                                    <Run Text="{Binding FreeSpaceText, Mode=OneWay}" Foreground="#64748B" FontSize="10" />
+                                                </TextBlock>
+                                            </DockPanel>
+                                            <ProgressBar Style="{StaticResource UsageBar}" Value="{Binding UsedPercentage, Mode=OneWay}" Foreground="{Binding PercentageBrush}" Margin="0,6,0,0" />
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <!-- PHYSICAL DISKS (SMART temperature and remaining life) -->
+                        <ItemsControl x:Name="DisksList">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="8" Padding="12,8" Margin="0,0,0,6"
+                                            ToolTip="Physical disk: temperature and remaining life (SMART)">
+                                        <DockPanel>
+                                            <TextBlock DockPanel.Dock="Right" Text="{Binding LifeText}" Foreground="{Binding LifeBrush}" FontSize="11" FontWeight="SemiBold" Margin="10,0,0,0" VerticalAlignment="Center" />
+                                            <TextBlock DockPanel.Dock="Right" Text="{Binding TemperatureText}" Foreground="{Binding TemperatureBrush}" FontSize="11" FontWeight="Bold" VerticalAlignment="Center" />
+                                            <TextBlock Text="{Binding Name}" Foreground="#F8FAFC" FontWeight="SemiBold" FontSize="12" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                                        </DockPanel>
                                     </Border>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
@@ -282,7 +399,7 @@
 
                 <!-- DEVICES SECTION (Collapsible & Draggable) -->
                 <StackPanel x:Name="DevicesSection">
-                    <Border x:Name="DevicesSectionHeader" Tag="DevicesSection" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="8" Padding="12,8" Margin="0,0,0,8"
+                    <Border x:Name="DevicesSectionHeader" Tag="DevicesSection" Background="Transparent" Padding="2,4" Margin="0,0,0,6"
                             AllowDrop="True" Cursor="Hand" ToolTip="Click to expand/collapse, drag to reorder section"
                             PreviewMouseLeftButtonDown="SectionHeader_PreviewMouseLeftButtonDown"
                             PreviewMouseMove="SectionHeader_PreviewMouseMove"
@@ -320,7 +437,7 @@
                                             <Border Grid.Column="1" Background="{Binding BadgeBackground}" BorderBrush="{Binding BadgeBorder}" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="10,0,0,0" VerticalAlignment="Center">
                                                 <TextBlock Text="{Binding DisplayPercentage}" Foreground="{Binding PercentageBrush}" FontWeight="Bold" FontSize="11" />
                                             </Border>
-                                            <TextBlock Grid.Column="2" Text="{Binding Status}" Margin="10,0,0,0" Foreground="#64748B" FontSize="11" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="2" Text="{Binding StatusText}" Margin="10,0,0,0" Foreground="#64748B" FontSize="11" VerticalAlignment="Center" />
                                         </Grid>
                                     </Border>
                                 </DataTemplate>

@@ -6,51 +6,65 @@ namespace Argus.Services;
 
 public sealed class DisplaySettingsService
 {
-    private readonly string settingsPath = GetSettingsPath();
+    private readonly string settingsPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "Argus",
+        "settings.json");
 
-    private static string GetSettingsPath()
-    {
-        string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        string newPath = Path.Combine(localAppData, "Argus", "settings.json");
-        string legacyPath = Path.Combine(localAppData, "PulseTray", "settings.json");
-
-        if (!File.Exists(newPath) && File.Exists(legacyPath))
-        {
-            return legacyPath;
-        }
-
-        return newPath;
-    }
+    // Startup state as last loaded or applied. Checking the real state means running schtasks.exe, which
+    // is too slow for saves that happen often (e.g. remembering the pinned window position).
+    private bool appliedStartWithWindows;
 
     public DisplaySettings Load()
     {
+        DisplaySettings settings;
         try
         {
-            DisplaySettings settings = JsonSerializer.Deserialize<DisplaySettings>(File.ReadAllText(settingsPath)) ?? new DisplaySettings();
-            settings.StartWithWindows = StartupService.IsStartupEnabled();
-            return settings;
+            settings = File.Exists(settingsPath)
+                ? JsonSerializer.Deserialize<DisplaySettings>(File.ReadAllText(settingsPath)) ?? new DisplaySettings()
+                : new DisplaySettings();
         }
-        catch (Exception)
+        catch (Exception exception)
         {
-            return new DisplaySettings { StartWithWindows = StartupService.IsStartupEnabled() };
+            AppLog.Warn($"Settings file {settingsPath} could not be read; using defaults", exception);
+            settings = new DisplaySettings();
         }
+
+        settings.StartWithWindows = appliedStartWithWindows = StartupService.IsStartupEnabled();
+        return settings;
     }
 
     public bool Save(DisplaySettings settings)
     {
-        bool startupUpdated = StartupService.SetStartup(settings.StartWithWindows);
-        if (!startupUpdated)
+        // Only touch the startup registration when the user actually changed the setting, so saving layout
+        // changes never rewrites or removes it.
+        bool startupUpdated = true;
+        if (settings.StartWithWindows != appliedStartWithWindows)
         {
-            settings.StartWithWindows = StartupService.IsStartupEnabled();
+            startupUpdated = StartupService.SetStartup(settings.StartWithWindows);
+            if (!startupUpdated)
+            {
+                settings.StartWithWindows = StartupService.IsStartupEnabled();
+            }
+
+            appliedStartWithWindows = settings.StartWithWindows;
         }
 
-        string? directory = Path.GetDirectoryName(settingsPath);
-        if (directory is not null)
+        try
         {
-            Directory.CreateDirectory(directory);
+            string? directory = Path.GetDirectoryName(settingsPath);
+            if (directory is not null)
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            File.WriteAllText(settingsPath, JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch (Exception exception)
+        {
+            AppLog.WarnOnce("settings-save", $"Saving settings to {settingsPath} failed", exception);
         }
 
-        File.WriteAllText(settingsPath, JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true }));
         return startupUpdated;
     }
 }

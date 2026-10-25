@@ -10,7 +10,7 @@ namespace Argus.Services;
 
 public sealed class DeviceBatteryService
 {
-    private int? lastVerifiedSteelSeriesBattery;
+    private readonly Dictionary<string, int> lastVerifiedHidBattery = new();
 
     public IReadOnlyList<DeviceBattery> Read()
     {
@@ -24,32 +24,36 @@ public sealed class DeviceBatteryService
                 TryAddWindowsBattery(devices, device);
             }
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            AppLog.WarnOnce("battery-windows", "Listing Windows battery devices failed", exception);
         }
 
         try
         {
             AddPairedBluetoothDevices(devices, BluetoothDevice.GetDeviceSelectorFromPairingState(true));
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            AppLog.WarnOnce("battery-bluetooth", "Listing paired Bluetooth devices failed", exception);
         }
 
         try
         {
             ReadBluetoothLeBatteries(devices);
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            AppLog.WarnOnce("battery-ble", "Reading Bluetooth LE batteries failed", exception);
         }
 
         try
         {
-            ReadSteelSeriesBattery(devices);
+            ReadHidBatteries(devices);
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            AppLog.WarnOnce("battery-hid", "Reading USB headset batteries failed", exception);
         }
 
         return devices
@@ -77,11 +81,28 @@ public sealed class DeviceBatteryService
         }
     }
 
+    // Lists paired devices that are connected right now; everything ever paired (old phones, car audio)
+    // would otherwise show up as "Battery unavailable". Devices that don't report a connection state are kept.
     private static void AddPairedBluetoothDevices(List<DeviceBattery> devices, string selector)
     {
-        DeviceInformationCollection pairedDevices = DeviceInformation.FindAllAsync(selector).AsTask().GetAwaiter().GetResult();
+        const string isConnectedProperty = "System.Devices.Aep.IsConnected";
+        DeviceInformationCollection pairedDevices;
+        try
+        {
+            pairedDevices = DeviceInformation.FindAllAsync(selector, new[] { isConnectedProperty }).AsTask().GetAwaiter().GetResult();
+        }
+        catch (Exception)
+        {
+            pairedDevices = DeviceInformation.FindAllAsync(selector).AsTask().GetAwaiter().GetResult();
+        }
+
         foreach (DeviceInformation device in pairedDevices)
         {
+            if (device.Properties.TryGetValue(isConnectedProperty, out object? connected) && connected is false)
+            {
+                continue;
+            }
+
             string name = GetDisplayName(device.Name, "Bluetooth device");
             AddOrReplaceDevice(devices, new DeviceBattery(name, null, "Battery unavailable"));
         }
@@ -159,43 +180,84 @@ public sealed class DeviceBatteryService
         return string.IsNullOrWhiteSpace(candidate) ? defaultValue : candidate.Trim();
     }
 
-    private void ReadSteelSeriesBattery(List<DeviceBattery> devices)
+    // Wired/USB-dongle headsets have no standard way to report battery over HID, so each supported model
+    // is listed with the feature report layout it uses. Add an entry here to support another model.
+    private static readonly HidBatteryModel[] KnownHidBatteryModels =
     {
-        foreach (HidDevice device in DeviceList.Local.GetHidDevices(0x1038, 0x2232))
+        // Feature report: byte 65 = 0xB7 marker, byte 66 = battery %, byte 67 = 0x02/0x03 when connected.
+        new(0x1038, 0x2232, "SteelSeries Arctis Nova 5", MinimumReportLength: 68, report =>
+            report[65] == 0xB7 && report[67] is 0x02 or 0x03 && report[66] <= 100 ? report[66] : null)
+    };
+
+    private void ReadHidBatteries(List<DeviceBattery> devices)
+    {
+        foreach (HidBatteryModel model in KnownHidBatteryModels)
         {
-            const string name = "SteelSeries Arctis Nova 5";
-            if (device.GetMaxFeatureReportLength() < 68)
+            // A headset exposes several HID interfaces; use the first that answers with a valid report.
+            HidDevice[] interfaces = DeviceList.Local.GetHidDevices(model.VendorId, model.ProductId).ToArray();
+            if (interfaces.Length == 0)
             {
-                AddOrReplaceDevice(devices, new DeviceBattery(name, null, "Battery unavailable"));
                 continue;
             }
 
-            for (int attempt = 0; attempt < 3; attempt++)
+            string name = GetProductName(interfaces[0]) ?? model.Name;
+            int? percentage = interfaces
+                .Where(device => device.GetMaxFeatureReportLength() >= model.MinimumReportLength)
+                .Select(device => TryReadHidBattery(device, model))
+                .FirstOrDefault(value => value is not null);
+
+            string key = $"{model.VendorId:X4}:{model.ProductId:X4}";
+            if (percentage is not null)
             {
-                try
-                {
-                    using HidStream stream = device.Open();
-                    byte[] feature = new byte[device.GetMaxFeatureReportLength()];
-                    stream.GetFeature(feature);
-
-                    if (feature[65] != 0xB7 || (feature[67] != 0x02 && feature[67] != 0x03) || feature[66] > 100)
-                    {
-                        continue;
-                    }
-
-                    lastVerifiedSteelSeriesBattery = feature[66];
-                    AddOrReplaceDevice(devices, new DeviceBattery(name, feature[66], "Connected"));
-                    return;
-                }
-                catch (Exception)
-                {
-                    // The headset may be busy with SteelSeries GG or deny this HID interface.
-                }
+                lastVerifiedHidBattery[key] = percentage.Value;
+                AddOrReplaceDevice(devices, new DeviceBattery(name, percentage, "Connected"));
             }
-
-            string status = lastVerifiedSteelSeriesBattery is null ? "Battery unavailable" : "Last verified";
-            AddOrReplaceDevice(devices, new DeviceBattery(name, lastVerifiedSteelSeriesBattery, status));
-            return;
+            else if (lastVerifiedHidBattery.TryGetValue(key, out int lastKnown))
+            {
+                AddOrReplaceDevice(devices, new DeviceBattery(name, lastKnown, "Last verified"));
+            }
+            else
+            {
+                AddOrReplaceDevice(devices, new DeviceBattery(name, null, "Battery unavailable"));
+            }
         }
     }
+
+    private static int? TryReadHidBattery(HidDevice device, HidBatteryModel model)
+    {
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            try
+            {
+                using HidStream stream = device.Open();
+                byte[] report = new byte[device.GetMaxFeatureReportLength()];
+                stream.GetFeature(report);
+                if (model.ParseBattery(report) is int percentage)
+                {
+                    return percentage;
+                }
+            }
+            catch (Exception)
+            {
+                // The device may be busy with its vendor software or deny this HID interface.
+            }
+        }
+
+        return null;
+    }
+
+    private static string? GetProductName(HidDevice device)
+    {
+        try
+        {
+            string name = device.GetProductName();
+            return string.IsNullOrWhiteSpace(name) ? null : name.Trim();
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private sealed record HidBatteryModel(int VendorId, int ProductId, string Name, int MinimumReportLength, Func<byte[], int?> ParseBattery);
 }

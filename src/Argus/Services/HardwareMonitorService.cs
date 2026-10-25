@@ -1,22 +1,32 @@
 using LibreHardwareMonitor.Hardware;
 using Argus.Models;
-using System.IO;
-using System.IO.MemoryMappedFiles;
-using System.Management;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
-using System.Text;
 
 namespace Argus.Services;
 
 public sealed class HardwareMonitorService : IDisposable
 {
+    // SMART data barely changes, and reading it on every 1-second refresh is wasteful.
+    private static readonly TimeSpan StorageRefreshInterval = TimeSpan.FromSeconds(30);
+
+    // VPN, virtual-machine and tunnel adapters carry traffic that also passes through the physical
+    // adapter; counting them as well would double the network rate.
+    private static readonly string[] VirtualAdapterKeywords =
+    {
+        "virtual", "vpn", "tap-", "tap adapter", "wireguard", "wintun", "tunnel", "hyper-v", "vethernet",
+        "vmware", "virtualbox", "npcap", "zerotier", "tailscale", "openvpn", "nordlynx", "loopback"
+    };
+
     private readonly Computer computer = new()
     {
         IsCpuEnabled = true,
         IsGpuEnabled = true,
-        IsMemoryEnabled = true,
-        IsStorageEnabled = false,
+        // RAM usage comes from GlobalMemoryStatusEx. LibreHardwareMonitor's memory module probes DIMM
+        // sensors over SMBus, which on some boards (e.g. ASUS B850 + NCT6701D) makes the Super I/O fan
+        // chip return garbage, so it stays off.
+        IsMemoryEnabled = false,
+        IsStorageEnabled = true,
         IsNetworkEnabled = false,
         IsControllerEnabled = true,
         IsMotherboardEnabled = true
@@ -24,9 +34,8 @@ public sealed class HardwareMonitorService : IDisposable
     private long previousReceivedBytes;
     private long previousSentBytes;
     private DateTime lastNetworkSampleUtc = DateTime.UtcNow;
-    private readonly NvidiaFrameViewService nvidiaFrameView = new();
+    private DateTime storageUpdatedAtUtc = DateTime.MinValue;
     private readonly FrameRateService frameRateService = new();
-    private readonly System.Diagnostics.PerformanceCounter? fpsCounter;
     private readonly bool computerOpened;
 
     public HardwareMonitorService()
@@ -35,125 +44,77 @@ public sealed class HardwareMonitorService : IDisposable
         {
             computer.Open();
             computerOpened = true;
+            LogDetectedHardware();
         }
-        catch (Exception)
+        catch (Exception exception)
         {
             computerOpened = false;
-        }
-
-        try
-        {
-            fpsCounter = new System.Diagnostics.PerformanceCounter(
-                "DXGI Graphics",
-                "Frames per second",
-                "_Total",
-                readOnly: true);
-        }
-        catch (Exception)
-        {
-            fpsCounter = null;
+            AppLog.Error("LibreHardwareMonitor could not be opened; hardware sensors are unavailable", exception);
         }
     }
 
     public HardwareReading Read()
     {
-        double? cpuTemperature = null;
-        double? gpuTemperature = null;
-        double? gpuCoreTemperature = null;
-        double? gpuUsage = null;
-        double? vramUsagePercent = null;
-        double? vramUsedMb = null;
-        double? vramTotalMb = null;
-        double? vramFreeMb = null;
-        double? fanRpm = null;
-        double? fps = null;
-        double? cpuUsage = null;
-        var fans = new List<FanReading>();
+        var readings = new SensorReadings();
         (double memoryUsagePercent, double memoryUsedGb, double memoryTotalGb) = GetMemoryDetails();
         NetworkSpeed networkSpeed = ReadNetworkSpeed();
 
         if (computerOpened)
         {
+            bool updateStorage = DateTime.UtcNow - storageUpdatedAtUtc >= StorageRefreshInterval;
+            if (updateStorage)
+            {
+                storageUpdatedAtUtc = DateTime.UtcNow;
+            }
+
             try
             {
                 foreach (IHardware hardware in computer.Hardware)
                 {
-                    ReadHardware(
-                        hardware,
-                        ref cpuTemperature,
-                        ref gpuTemperature,
-                        ref gpuCoreTemperature,
-                        ref gpuUsage,
-                        ref vramUsagePercent,
-                        ref vramUsedMb,
-                        ref vramTotalMb,
-                        ref vramFreeMb,
-                        ref fanRpm,
-                        fans,
-                        ref fps,
-                        ref cpuUsage);
+                    bool update = hardware.HardwareType != HardwareType.Storage || updateStorage;
+                    ReadHardware(hardware, update, readings);
                 }
             }
-            catch (Exception)
+            catch (Exception exception)
             {
+                AppLog.WarnOnce("hardware-enumeration", "Enumerating hardware failed", exception);
             }
         }
 
-        cpuTemperature ??= ReadAcpiTemperature();
-        cpuTemperature ??= ReadHwiNfoTemperature();
-        double nvidiaFps = nvidiaFrameView.ReadFps();
-        if (nvidiaFps > 0)
-        {
-            fps = nvidiaFps;
-        }
-        else
-        {
-            double presentMonFps = frameRateService.ReadFps();
-            if (presentMonFps > 0)
-            {
-                fps = presentMonFps;
-            }
-        }
+        FrameRateReading frameRate = frameRateService.ReadFps();
 
-        fps ??= ReadPerformanceCounterFps();
-        fps = Math.Max(0d, fps ?? 0d);
-
-        double gpuFanRpm = nvidiaFrameView.ReadGpuFanRpm();
-        if (gpuFanRpm > 0 && !fans.Any(fan => fan.Name.Equals("NVIDIA GPU Fan", StringComparison.OrdinalIgnoreCase)))
-        {
-            fans.Add(new FanReading("NVIDIA GPU Fan", gpuFanRpm));
-            fanRpm = Max(fanRpm, (float)gpuFanRpm);
-        }
-
-        double? finalGpuTemp = gpuCoreTemperature ?? gpuTemperature;
-
-        if (vramUsedMb is null && vramTotalMb is not null && vramFreeMb is not null)
+        GpuSensors? gpu = SelectPrimaryGpu(readings.Gpus);
+        double? vramUsedMb = gpu?.VramUsedMb;
+        double? vramTotalMb = gpu?.VramTotalMb;
+        if (vramUsedMb is null && vramTotalMb is not null && gpu?.VramFreeMb is double vramFreeMb)
         {
             vramUsedMb = vramTotalMb - vramFreeMb;
         }
 
-        if (vramUsagePercent is null && vramUsedMb is not null && vramTotalMb is not null && vramTotalMb > 0)
+        double? vramUsagePercent = gpu?.VramUsagePercent;
+        if (vramUsagePercent is null && vramUsedMb is not null && vramTotalMb is > 0)
         {
             vramUsagePercent = (vramUsedMb / vramTotalMb) * 100d;
         }
 
-        double? vramUsedGb = vramUsedMb.HasValue ? vramUsedMb.Value / 1024d : null;
-        double? vramTotalGb = vramTotalMb.HasValue ? vramTotalMb.Value / 1024d : null;
-
         return new HardwareReading(
-            cpuTemperature,
-            cpuUsage,
-            finalGpuTemp,
-            gpuUsage,
-            vramUsedGb,
-            vramTotalGb,
+            readings.CpuTemperature,
+            readings.CpuUsage,
+            readings.CpuPower,
+            gpu?.CoreTemperature ?? gpu?.OtherTemperature,
+            gpu?.Load,
+            gpu?.Power,
+            vramUsedMb / 1024d,
+            vramTotalMb / 1024d,
             vramUsagePercent,
             memoryUsagePercent,
             memoryUsedGb,
             memoryTotalGb,
-            fanRpm,
-            fans,
-            fps,
+            readings.Fans,
+            readings.Disks,
+            frameRate.Fps,
+            frameRate.OnePercentLow,
+            frameRate.Application,
             networkSpeed.DownloadKilobytesPerSecond,
             networkSpeed.UploadKilobytesPerSecond,
             networkSpeed.LinkSpeedText);
@@ -162,32 +123,42 @@ public sealed class HardwareMonitorService : IDisposable
     public void Dispose()
     {
         frameRateService.Dispose();
-        nvidiaFrameView.Dispose();
-        fpsCounter?.Dispose();
         if (computerOpened)
         {
             computer.Close();
         }
     }
 
-    private static void ReadHardware(
-        IHardware hardware,
-        ref double? cpuTemperature,
-        ref double? gpuTemperature,
-        ref double? gpuCoreTemperature,
-        ref double? gpuUsage,
-        ref double? vramUsagePercent,
-        ref double? vramUsedMb,
-        ref double? vramTotalMb,
-        ref double? vramFreeMb,
-        ref double? fanRpm,
-        List<FanReading> fans,
-        ref double? fps,
-        ref double? cpuUsage)
+    private void LogDetectedHardware()
     {
+        foreach (IHardware hardware in computer.Hardware)
+        {
+            AppLog.Info($"Detected {hardware.HardwareType}: {hardware.Name}");
+            foreach (IHardware child in hardware.SubHardware)
+            {
+                AppLog.Info($"Detected {child.HardwareType}: {child.Name} (on {hardware.Name})");
+            }
+        }
+    }
+
+    private static void ReadHardware(IHardware hardware, bool update, SensorReadings readings)
+    {
+        GpuSensors? gpu = null;
+        if (hardware.HardwareType is HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel)
+        {
+            gpu = new GpuSensors(hardware.HardwareType);
+            readings.Gpus.Add(gpu);
+        }
+
+        DiskSensors? disk = hardware.HardwareType == HardwareType.Storage ? new DiskSensors() : null;
+
         try
         {
-            hardware.Update();
+            if (update)
+            {
+                hardware.Update();
+            }
+
             foreach (ISensor sensor in hardware.Sensors)
             {
                 if (sensor.Value is not float value)
@@ -195,36 +166,33 @@ public sealed class HardwareMonitorService : IDisposable
                     continue;
                 }
 
-                if (value >= 0 && (sensor.Name.Contains("FPS", StringComparison.OrdinalIgnoreCase) ||
-                    sensor.Name.Contains("Frame Rate", StringComparison.OrdinalIgnoreCase) ||
-                    sensor.Name.Contains("Framerate", StringComparison.OrdinalIgnoreCase)))
+                if (disk is not null)
                 {
-                    fps = value;
+                    ReadDiskSensor(disk, sensor, value);
                 }
-
-                if (sensor.SensorType == SensorType.Temperature && IsValidTemperature(value))
+                else if (sensor.SensorType == SensorType.Temperature && IsValidTemperature(value))
                 {
                     if (hardware.HardwareType == HardwareType.Cpu)
                     {
-                        cpuTemperature = Max(cpuTemperature, value);
+                        readings.CpuTemperature = Max(readings.CpuTemperature, value);
                     }
                     else if (hardware.HardwareType is HardwareType.Motherboard)
                     {
                         if (sensor.Name.Contains("CPU", StringComparison.OrdinalIgnoreCase) ||
                             sensor.Name.Contains("Package", StringComparison.OrdinalIgnoreCase))
                         {
-                            cpuTemperature = Max(cpuTemperature, value);
+                            readings.CpuTemperature = Max(readings.CpuTemperature, value);
                         }
                     }
-                    else if (hardware.HardwareType is HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel)
+                    else if (gpu is not null)
                     {
                         if (sensor.Name.Contains("GPU Core", StringComparison.OrdinalIgnoreCase))
                         {
-                            gpuCoreTemperature = Max(gpuCoreTemperature, value);
+                            gpu.CoreTemperature = Max(gpu.CoreTemperature, value);
                         }
                         else
                         {
-                            gpuTemperature = Max(gpuTemperature, value);
+                            gpu.OtherTemperature = Max(gpu.OtherTemperature, value);
                         }
                     }
                 }
@@ -234,184 +202,193 @@ public sealed class HardwareMonitorService : IDisposable
                     {
                         if (sensor.Name.Contains("CPU Total", StringComparison.OrdinalIgnoreCase))
                         {
-                            cpuUsage = value;
+                            readings.CpuUsage = value;
                         }
                     }
-                    else if (hardware.HardwareType is HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel)
+                    else if (gpu is not null)
                     {
                         if (sensor.Name.Contains("GPU Core", StringComparison.OrdinalIgnoreCase) ||
                             sensor.Name.Equals("GPU", StringComparison.OrdinalIgnoreCase) ||
                             sensor.Name.Contains("D3D 3D", StringComparison.OrdinalIgnoreCase))
                         {
-                            gpuUsage = value;
+                            gpu.Load = value;
                         }
-                        else if (sensor.Name.Contains("GPU Memory", StringComparison.OrdinalIgnoreCase) ||
-                                 sensor.Name.Contains("Memory Controller", StringComparison.OrdinalIgnoreCase))
+                        // "GPU Memory" is VRAM in use; "GPU Memory Controller" is bandwidth and must not match.
+                        else if (sensor.Name.Equals("GPU Memory", StringComparison.OrdinalIgnoreCase))
                         {
-                            vramUsagePercent = value;
+                            gpu.VramUsagePercent = value;
+                        }
+                    }
+                }
+                else if (sensor.SensorType == SensorType.Power && value > 0)
+                {
+                    // Whole-package power ("Package" on AMD, "CPU Package" on Intel; "GPU Package" on NVIDIA),
+                    // not the per-core or per-rail values.
+                    if (hardware.HardwareType == HardwareType.Cpu &&
+                        sensor.Name.Contains("Package", StringComparison.OrdinalIgnoreCase))
+                    {
+                        readings.CpuPower = value;
+                    }
+                    else if (gpu is not null)
+                    {
+                        bool isTotal = sensor.Name.Contains("Package", StringComparison.OrdinalIgnoreCase) ||
+                                       sensor.Name.Contains("Board", StringComparison.OrdinalIgnoreCase) ||
+                                       sensor.Name.Contains("Total", StringComparison.OrdinalIgnoreCase);
+                        if (isTotal)
+                        {
+                            gpu.Power = value;
+                            gpu.HasTotalPower = true;
+                        }
+                        else if (!gpu.HasTotalPower)
+                        {
+                            // No whole-GPU sensor (e.g. integrated GPUs): use the largest rail as an estimate.
+                            gpu.Power = Math.Max(gpu.Power ?? 0, value);
                         }
                     }
                 }
                 else if (sensor.SensorType is SensorType.SmallData or SensorType.Data)
                 {
-                    if (hardware.HardwareType is HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel)
+                    if (gpu is not null)
                     {
-                        if (sensor.Name.Contains("GPU Memory Used", StringComparison.OrdinalIgnoreCase) ||
-                            sensor.Name.Contains("D3D Dedicated Memory Used", StringComparison.OrdinalIgnoreCase))
+                        // Prefer the driver-reported "GPU Memory *" values; D3D dedicated memory is the fallback
+                        // (e.g. Intel GPUs only report the D3D figures).
+                        if (sensor.Name.Equals("GPU Memory Used", StringComparison.OrdinalIgnoreCase))
                         {
-                            vramUsedMb = value;
+                            gpu.VramUsedMb = value;
                         }
-                        else if (sensor.Name.Contains("GPU Memory Total", StringComparison.OrdinalIgnoreCase))
+                        else if (sensor.Name.Equals("GPU Memory Total", StringComparison.OrdinalIgnoreCase))
                         {
-                            vramTotalMb = value;
+                            gpu.VramTotalMb = value;
                         }
-                        else if (sensor.Name.Contains("GPU Memory Free", StringComparison.OrdinalIgnoreCase))
+                        else if (sensor.Name.Equals("GPU Memory Free", StringComparison.OrdinalIgnoreCase))
                         {
-                            vramFreeMb = value;
+                            gpu.VramFreeMb = value;
+                        }
+                        else if (sensor.Name.Equals("D3D Dedicated Memory Used", StringComparison.OrdinalIgnoreCase))
+                        {
+                            gpu.VramUsedMb ??= value;
+                        }
+                        else if (sensor.Name.Equals("D3D Dedicated Memory Total", StringComparison.OrdinalIgnoreCase))
+                        {
+                            gpu.VramTotalMb ??= value;
                         }
                     }
                 }
                 else if (sensor.SensorType == SensorType.Fan && value > 0)
                 {
-                    fanRpm = Max(fanRpm, value);
-                    string fanLabel = $"{hardware.Name} - {sensor.Name}";
-                    if (!fans.Any(f => f.Name == fanLabel))
+                    // Short sensor names read better ("GPU Fan 1"); add the hardware name only to tell duplicates apart.
+                    string fanLabel = readings.Fans.Any(f => f.Name == sensor.Name) ? $"{hardware.Name} {sensor.Name}" : sensor.Name;
+                    if (!readings.Fans.Any(f => f.Name == fanLabel))
                     {
-                        fans.Add(new FanReading(fanLabel, value));
+                        readings.Fans.Add(new FanReading(sensor.Identifier.ToString(), fanLabel, value));
                     }
                 }
             }
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            AppLog.WarnOnce($"hardware:{hardware.Identifier}", $"Reading {hardware.Name} failed", exception);
+        }
+
+        if (disk is { Temperature: not null } or { LifePercent: not null })
+        {
+            readings.Disks.Add(new DiskHealth(hardware.Name, disk.Temperature, disk.WarningTemperature, disk.CriticalTemperature, disk.LifePercent));
         }
 
         try
         {
             foreach (IHardware child in hardware.SubHardware)
             {
-                ReadHardware(
-                    child,
-                    ref cpuTemperature,
-                    ref gpuTemperature,
-                    ref gpuCoreTemperature,
-                    ref gpuUsage,
-                    ref vramUsagePercent,
-                    ref vramUsedMb,
-                    ref vramTotalMb,
-                    ref vramFreeMb,
-                    ref fanRpm,
-                    fans,
-                    ref fps,
-                    ref cpuUsage);
+                ReadHardware(child, update, readings);
             }
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            AppLog.WarnOnce($"subhardware:{hardware.Identifier}", $"Reading sub-hardware of {hardware.Name} failed", exception);
         }
+    }
+
+    // NVMe drives report "Composite Temperature" plus per-sensor values and the drive's own warning and
+    // critical limits; SATA drives report "Temperature". Remaining life is "Life" (NVMe) or "Remaining Life".
+    private static void ReadDiskSensor(DiskSensors disk, ISensor sensor, float value)
+    {
+        if (sensor.SensorType == SensorType.Temperature)
+        {
+            if (sensor.Name.Equals("Warning Temperature", StringComparison.OrdinalIgnoreCase))
+            {
+                disk.WarningTemperature = value;
+            }
+            else if (sensor.Name.Equals("Critical Temperature", StringComparison.OrdinalIgnoreCase))
+            {
+                disk.CriticalTemperature = value;
+            }
+            else if (IsValidTemperature(value) &&
+                     (sensor.Name.Equals("Composite Temperature", StringComparison.OrdinalIgnoreCase) ||
+                      sensor.Name.Equals("Temperature", StringComparison.OrdinalIgnoreCase) ||
+                      disk.Temperature is null))
+            {
+                disk.Temperature = value;
+            }
+        }
+        else if (sensor.SensorType == SensorType.Level &&
+                 (sensor.Name.Equals("Life", StringComparison.OrdinalIgnoreCase) ||
+                  sensor.Name.Equals("Remaining Life", StringComparison.OrdinalIgnoreCase)))
+        {
+            disk.LifePercent = value;
+        }
+    }
+
+    // With an integrated and a dedicated GPU (most laptops, and desktops with an iGPU enabled), show the
+    // dedicated one: it has the most dedicated memory (an iGPU only reserves a few hundred MB). Ties go to
+    // NVIDIA, then AMD, then Intel.
+    private static GpuSensors? SelectPrimaryGpu(List<GpuSensors> gpus)
+    {
+        return gpus
+            .OrderByDescending(gpu => gpu.VramTotalMb ?? 0)
+            .ThenBy(gpu => gpu.Type switch
+            {
+                HardwareType.GpuNvidia => 0,
+                HardwareType.GpuAmd => 1,
+                _ => 2
+            })
+            .FirstOrDefault();
+    }
+
+    private sealed class SensorReadings
+    {
+        public double? CpuTemperature { get; set; }
+        public double? CpuUsage { get; set; }
+        public double? CpuPower { get; set; }
+        public List<GpuSensors> Gpus { get; } = new();
+        public List<FanReading> Fans { get; } = new();
+        public List<DiskHealth> Disks { get; } = new();
+    }
+
+    private sealed class GpuSensors(HardwareType type)
+    {
+        public HardwareType Type { get; } = type;
+        public double? CoreTemperature { get; set; }
+        public double? OtherTemperature { get; set; }
+        public double? Load { get; set; }
+        public double? Power { get; set; }
+        public bool HasTotalPower { get; set; }
+        public double? VramUsagePercent { get; set; }
+        public double? VramUsedMb { get; set; }
+        public double? VramTotalMb { get; set; }
+        public double? VramFreeMb { get; set; }
+    }
+
+    private sealed class DiskSensors
+    {
+        public double? Temperature { get; set; }
+        public double? WarningTemperature { get; set; }
+        public double? CriticalTemperature { get; set; }
+        public double? LifePercent { get; set; }
     }
 
     private static bool IsValidTemperature(float value) => value >= 10 && value <= 130;
 
     private static double Max(double? current, float candidate) => Math.Max(current ?? double.MinValue, candidate);
-
-    private static double? ReadAcpiTemperature()
-    {
-        try
-        {
-            using var searcher = new ManagementObjectSearcher(
-                @"root\WMI",
-                "SELECT CurrentTemperature FROM MSAcpi_ThermalZoneTemperature");
-
-            double? temperature = null;
-            foreach (ManagementObject zone in searcher.Get())
-            {
-                if (zone["CurrentTemperature"] is uint value)
-                {
-                    double celsius = value / 10d - 273.15d;
-                    if (IsValidTemperature((float)celsius))
-                    {
-                        temperature = Max(temperature, (float)celsius);
-                    }
-                }
-            }
-
-            return temperature;
-        }
-        catch (Exception)
-        {
-            return null;
-        }
-    }
-
-    private static double? ReadHwiNfoTemperature()
-    {
-        try
-        {
-            using MemoryMappedFile map = MemoryMappedFile.OpenExisting("Global\\HWiNFO_SENS_SM2", MemoryMappedFileRights.Read);
-            using MemoryMappedViewAccessor view = map.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read);
-            int length = checked((int)view.Capacity);
-            byte[] data = new byte[length];
-            view.ReadArray(0, data, 0, data.Length);
-
-            byte[] label = Encoding.ASCII.GetBytes("CPU (Tctl/Tdie)");
-            for (int labelOffset = 0; labelOffset <= data.Length - label.Length; labelOffset++)
-            {
-                if (!Matches(data, labelOffset, label))
-                {
-                    continue;
-                }
-
-                for (int valueOffset = labelOffset + 256; valueOffset <= labelOffset + 512 && valueOffset + sizeof(double) <= data.Length; valueOffset += sizeof(double))
-                {
-                    double value = BitConverter.ToDouble(data, valueOffset);
-                    if (IsValidTemperature((float)value))
-                    {
-                        return value;
-                    }
-                }
-            }
-        }
-        catch (FileNotFoundException)
-        {
-        }
-        catch (Exception)
-        {
-        }
-
-        return null;
-    }
-
-    private static bool Matches(byte[] data, int offset, byte[] value)
-    {
-        for (int index = 0; index < value.Length; index++)
-        {
-            if (data[offset + index] != value[index])
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private double? ReadPerformanceCounterFps()
-    {
-        if (fpsCounter is null)
-        {
-            return null;
-        }
-
-        try
-        {
-            float sample = fpsCounter.NextValue();
-            return sample > 0 ? sample : null;
-        }
-        catch (Exception)
-        {
-            return null;
-        }
-    }
 
     private NetworkSpeed ReadNetworkSpeed()
     {
@@ -424,8 +401,9 @@ public sealed class HardwareMonitorService : IDisposable
         {
             networkInterfaces = NetworkInterface.GetAllNetworkInterfaces();
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            AppLog.WarnOnce("network-interfaces", "Listing network adapters failed", exception);
             networkInterfaces = Array.Empty<NetworkInterface>();
         }
 
@@ -433,8 +411,7 @@ public sealed class HardwareMonitorService : IDisposable
         {
             try
             {
-                if (networkInterface.NetworkInterfaceType == NetworkInterfaceType.Loopback ||
-                    networkInterface.OperationalStatus != OperationalStatus.Up)
+                if (networkInterface.OperationalStatus != OperationalStatus.Up || IsVirtualAdapter(networkInterface))
                 {
                     continue;
                 }
@@ -448,19 +425,21 @@ public sealed class HardwareMonitorService : IDisposable
                 totalReceived += checked((long)statistics.BytesReceived);
                 totalSent += checked((long)statistics.BytesSent);
             }
-            catch (Exception)
+            catch (Exception exception)
             {
+                AppLog.WarnOnce($"network:{networkInterface.Id}", $"Reading network adapter {networkInterface.Name} failed", exception);
             }
         }
 
         DateTime now = DateTime.UtcNow;
         double elapsedSeconds = Math.Max((now - lastNetworkSampleUtc).TotalSeconds, 0.5d);
+        // Totals drop when an adapter goes down; clamp so that sample reads as 0 instead of negative.
         double downloadKilobytesPerSecond = previousReceivedBytes == 0
             ? 0d
-            : (totalReceived - previousReceivedBytes) / elapsedSeconds / 1024d;
+            : Math.Max(0d, (totalReceived - previousReceivedBytes) / elapsedSeconds / 1024d);
         double uploadKilobytesPerSecond = previousSentBytes == 0
             ? 0d
-            : (totalSent - previousSentBytes) / elapsedSeconds / 1024d;
+            : Math.Max(0d, (totalSent - previousSentBytes) / elapsedSeconds / 1024d);
 
         previousReceivedBytes = totalReceived;
         previousSentBytes = totalSent;
@@ -469,6 +448,17 @@ public sealed class HardwareMonitorService : IDisposable
         string? linkSpeedText = FormatLinkSpeed(maxSpeedBps);
 
         return new NetworkSpeed(downloadKilobytesPerSecond, uploadKilobytesPerSecond, linkSpeedText);
+    }
+
+    private static bool IsVirtualAdapter(NetworkInterface networkInterface)
+    {
+        if (networkInterface.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel or NetworkInterfaceType.Ppp)
+        {
+            return true;
+        }
+
+        string description = networkInterface.Description + " " + networkInterface.Name;
+        return VirtualAdapterKeywords.Any(keyword => description.Contains(keyword, StringComparison.OrdinalIgnoreCase));
     }
 
     private static string? FormatLinkSpeed(long speedBps)
@@ -530,17 +520,21 @@ public sealed class HardwareMonitorService : IDisposable
 public sealed record HardwareReading(
     double? CpuTemperature,
     double? CpuUsage,
+    double? CpuPower,
     double? GpuTemperature,
     double? GpuUsage,
+    double? GpuPower,
     double? VramUsedGb,
     double? VramTotalGb,
     double? VramUsagePercent,
     double MemoryUsagePercent,
     double MemoryUsedGb,
     double MemoryTotalGb,
-    double? FanRpm,
     IReadOnlyList<FanReading> Fans,
-    double? Fps,
+    IReadOnlyList<DiskHealth> Disks,
+    double Fps,
+    double? FpsOnePercentLow,
+    string? FpsApplication,
     double DownloadKilobytesPerSecond,
     double UploadKilobytesPerSecond,
     string? NetworkLinkSpeedText);

@@ -279,7 +279,7 @@ public partial class MainWindow : Window
 
         RenderAllSparklines();
 
-        CurrentTelemetry = BuildTelemetry(hardware, devices, system);
+        CurrentTelemetry = BuildTelemetry(hardware, devices);
         TelemetryUpdated?.Invoke(CurrentTelemetry);
     }
 
@@ -867,7 +867,7 @@ public partial class MainWindow : Window
         return value < 10 ? $"{value:0.0} {unit}" : $"{value:0} {unit}";
     }
 
-    private string BuildTelemetry(HardwareReading hardware, IReadOnlyList<DeviceBattery> devices, SystemInfo system)
+    private string BuildTelemetry(HardwareReading hardware, IReadOnlyList<DeviceBattery> devices)
     {
         var telemetry = new System.Text.StringBuilder("Argus\n");
         var summary = new List<string>();

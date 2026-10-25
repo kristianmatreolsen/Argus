@@ -6,21 +6,10 @@ namespace Argus.Services;
 
 public sealed class DisplaySettingsService
 {
-    private readonly string settingsPath = GetSettingsPath();
-
-    private static string GetSettingsPath()
-    {
-        string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        string newPath = Path.Combine(localAppData, "Argus", "settings.json");
-        string legacyPath = Path.Combine(localAppData, "PulseTray", "settings.json");
-
-        if (!File.Exists(newPath) && File.Exists(legacyPath))
-        {
-            return legacyPath;
-        }
-
-        return newPath;
-    }
+    private readonly string settingsPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "Argus",
+        "settings.json");
 
     public DisplaySettings Load()
     {

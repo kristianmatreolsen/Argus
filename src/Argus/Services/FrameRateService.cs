@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace Argus.Services;
@@ -20,8 +21,8 @@ public sealed class FrameRateService : IDisposable
     };
 
     private Process? process;
-    private uint lastForegroundProcessId;
-    private string? lastForegroundApplication;
+    private FileStream? bundledPresentMonLock;
+    private readonly Dictionary<uint, string> processNames = new();
     private readonly object sync = new();
     private readonly Dictionary<string, Queue<DateTime>> frameTimes = new(StringComparer.OrdinalIgnoreCase);
     private readonly CancellationTokenSource cancellation = new();
@@ -35,7 +36,12 @@ public sealed class FrameRateService : IDisposable
     // command line and exit immediately. Try each candidate and keep the first one that stays running.
     private async Task StartFirstWorkingPresentMonAsync(CancellationToken token)
     {
-        foreach (string executable in FindPresentMonCandidates())
+        string? bundled = PrepareBundledPresentMon();
+        IEnumerable<string> candidates = bundled is null
+            ? FindPresentMonCandidates()
+            : FindPresentMonCandidates().Prepend(bundled);
+
+        foreach (string executable in candidates)
         {
             if (token.IsCancellationRequested)
             {
@@ -131,51 +137,114 @@ public sealed class FrameRateService : IDisposable
         }
     }
 
-    // Opening the dashboard (or the taskbar/Start menu) moves the foreground away from the game, so those
-    // windows are skipped and the previously focused app stays the one being measured.
+    // The app being measured is the one in the foreground. When that is Argus itself or the taskbar/Start
+    // menu (e.g. while looking at the dashboard), the window directly behind it in the z-order is used
+    // instead: the app the user was in before. This also works right after Argus starts.
     private string? UpdateForegroundApplication()
     {
         IntPtr window = GetForegroundWindow();
-        if (window == IntPtr.Zero || GetWindowThreadProcessId(window, out uint processId) == 0 || processId == Environment.ProcessId)
+        string? application = GetApplication(window);
+        if (window == IntPtr.Zero || application is null || IsArgusOrShell(window, application))
         {
-            return lastForegroundApplication;
+            application = FindAppBehind(window);
         }
 
-        if (processId != lastForegroundProcessId)
+        return application;
+    }
+
+    private string? FindAppBehind(IntPtr window)
+    {
+        IntPtr candidate = window == IntPtr.Zero ? GetTopWindow(IntPtr.Zero) : GetWindow(window, GwHwndNext);
+        for (int i = 0; i < 1000 && candidate != IntPtr.Zero; i++, candidate = GetWindow(candidate, GwHwndNext))
         {
-            try
+            if (!IsUserFacingWindow(candidate))
             {
-                using Process foreground = Process.GetProcessById((int)processId);
-                string application = foreground.ProcessName + ".exe";
-                lastForegroundProcessId = processId;
-                if (!ShellProcesses.Contains(application))
-                {
-                    lastForegroundApplication = application;
-                }
+                continue;
             }
-            catch (Exception)
+
+            string? application = GetApplication(candidate);
+            if (application is not null && !IsArgusOrShell(candidate, application))
             {
-                // The process exited between reading the window and opening it.
+                return application;
             }
         }
 
-        return lastForegroundApplication;
+        return null;
+    }
+
+    private static bool IsArgusOrShell(IntPtr window, string application)
+    {
+        return (GetWindowThreadProcessId(window, out uint processId) != 0 && processId == Environment.ProcessId)
+            || ShellProcesses.Contains(application);
+    }
+
+    // Visible, not minimized, not a tool window, and not cloaked (UWP apps keep invisible "cloaked"
+    // windows around that would otherwise look like the window behind Argus).
+    private static bool IsUserFacingWindow(IntPtr window)
+    {
+        if (!IsWindowVisible(window) || IsIconic(window))
+        {
+            return false;
+        }
+
+        if ((GetWindowLongPtr(window, GwlExStyle).ToInt64() & WsExToolWindow) != 0)
+        {
+            return false;
+        }
+
+        return DwmGetWindowAttribute(window, DwmwaCloaked, out int cloaked, sizeof(int)) != 0 || cloaked == 0;
+    }
+
+    private string? GetApplication(IntPtr window)
+    {
+        if (window == IntPtr.Zero || GetWindowThreadProcessId(window, out uint processId) == 0)
+        {
+            return null;
+        }
+
+        if (processNames.TryGetValue(processId, out string? cached))
+        {
+            return cached;
+        }
+
+        try
+        {
+            using Process process = Process.GetProcessById((int)processId);
+            string application = process.ProcessName + ".exe";
+            if (processNames.Count > 256)
+            {
+                processNames.Clear();
+            }
+
+            processNames[processId] = application;
+            return application;
+        }
+        catch (Exception)
+        {
+            // The process exited between reading the window and opening it.
+            return null;
+        }
     }
 
     public void Dispose()
     {
         Process? running;
+        FileStream? presentMonLock;
         lock (sync)
         {
             cancellation.Cancel();
             running = process;
             process = null;
+            presentMonLock = bundledPresentMonLock;
+            bundledPresentMonLock = null;
         }
 
         if (running is not null)
         {
             StopProcess(running);
         }
+
+        presentMonLock?.Dispose();
     }
 
     private static void StopProcess(Process target)
@@ -270,6 +339,101 @@ public sealed class FrameRateService : IDisposable
 
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+
+    private const uint GwHwndNext = 2;
+    private const int GwlExStyle = -20;
+    private const long WsExToolWindow = 0x00000080;
+    private const int DwmwaCloaked = 14;
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetWindow(IntPtr window, uint command);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetTopWindow(IntPtr parent);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr window);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsIconic(IntPtr window);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    private static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out int value, int size);
+
+    // Extracts the PresentMon embedded at build time to %LOCALAPPDATA%\Argus\PresentMon. Argus often runs
+    // elevated while that folder is writable by any process of the user, so the file is checked against
+    // the embedded copy's SHA-256 and kept open without write/delete sharing until Argus exits; it can't
+    // be swapped for another program between the check and the launch.
+    private string? PrepareBundledPresentMon()
+    {
+        try
+        {
+            using Stream? resource = typeof(FrameRateService).Assembly.GetManifestResourceStream("PresentMon.exe");
+            if (resource is null)
+            {
+                return null;
+            }
+
+            byte[] bytes = new byte[resource.Length];
+            resource.ReadExactly(bytes);
+            byte[] expectedHash = SHA256.HashData(bytes);
+
+            string directory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Argus", "PresentMon");
+            string path = Path.Combine(directory, $"PresentMon-{Convert.ToHexString(expectedHash, 0, 8)}.exe");
+            Directory.CreateDirectory(directory);
+            DeleteOtherBundledVersions(directory, path);
+
+            for (int attempt = 0; attempt < 2; attempt++)
+            {
+                if (!File.Exists(path))
+                {
+                    File.WriteAllBytes(path, bytes);
+                }
+
+                var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                if (SHA256.HashData(stream).AsSpan().SequenceEqual(expectedHash))
+                {
+                    lock (sync)
+                    {
+                        bundledPresentMonLock = stream;
+                    }
+
+                    return path;
+                }
+
+                // Partial or modified file: replace it with the embedded copy and check again.
+                stream.Dispose();
+                File.Delete(path);
+            }
+        }
+        catch (Exception)
+        {
+        }
+
+        return null;
+    }
+
+    private static void DeleteOtherBundledVersions(string directory, string currentPath)
+    {
+        foreach (string file in Directory.GetFiles(directory, "PresentMon-*.exe"))
+        {
+            if (!string.Equals(file, currentPath, StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    File.Delete(file);
+                }
+                catch (Exception)
+                {
+                    // Still in use by another Argus session; it is removed next time.
+                }
+            }
+        }
+    }
 
     private static IEnumerable<string> FindPresentMonCandidates()
     {

@@ -15,6 +15,9 @@ public sealed class DisplaySettings
     public bool ShowDeviceBatteriesInTray { get; set; } = true;
     public bool StartWithWindows { get; set; } = false;
 
+    // Custom fan names keyed by FanReading.Id.
+    public Dictionary<string, string> FanNames { get; set; } = new();
+
     public List<string> SectionOrder { get; set; } = new() { "MetricsSection", "SystemSection", "DevicesSection" };
     public List<string> CardOrder { get; set; } = new()
     {

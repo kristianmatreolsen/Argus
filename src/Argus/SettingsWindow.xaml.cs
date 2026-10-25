@@ -1,4 +1,6 @@
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
 using Argus.Models;
 
 namespace Argus;
@@ -10,10 +12,18 @@ public partial class SettingsWindow : Window
 
     public event Action? SettingsChanged;
 
-    public SettingsWindow(DisplaySettings settings)
+    public SettingsWindow(DisplaySettings settings, IReadOnlyList<FanReading> fans)
     {
         InitializeComponent();
         this.settings = settings;
+        FanNamesList.ItemsSource = fans
+            .Select(fan => new FanNameRow(
+                fan.Id,
+                fan.Name,
+                $"{fan.Rpm:0} {fan.Unit} now",
+                settings.FanNames.TryGetValue(fan.Id, out string? name) ? name : string.Empty))
+            .ToList();
+        NoFansText.Visibility = fans.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         GpuTemperatureCheckBox.IsChecked = settings.ShowGpuTemperature;
         GpuLoadCheckBox.IsChecked = settings.ShowGpuLoad;
         CpuTemperatureCheckBox.IsChecked = settings.ShowCpuTemperature;
@@ -77,5 +87,42 @@ public partial class SettingsWindow : Window
         updatingStartupCheckBox = false;
     }
 
+    private void FanNameTextBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (sender is not TextBox { Tag: string id } textBox)
+        {
+            return;
+        }
+
+        string name = textBox.Text.Trim();
+        settings.FanNames.TryGetValue(id, out string? existing);
+        if (name == (existing ?? string.Empty))
+        {
+            return;
+        }
+
+        if (name.Length == 0)
+        {
+            settings.FanNames.Remove(id);
+        }
+        else
+        {
+            settings.FanNames[id] = name;
+        }
+
+        SettingsChanged?.Invoke();
+    }
+
+    private void FanNameTextBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter && sender is TextBox textBox)
+        {
+            FanNameTextBox_LostFocus(textBox, e);
+            Keyboard.ClearFocus();
+        }
+    }
+
     private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
+
+    private sealed record FanNameRow(string Id, string DefaultName, string RpmText, string CustomName);
 }

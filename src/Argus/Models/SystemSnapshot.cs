@@ -2,7 +2,8 @@ using System.Globalization;
 
 namespace Argus.Models;
 
-public sealed record FanReading(string Name, double Rpm, string Unit = "RPM");
+// Id is the sensor's stable identifier (e.g. "/lpc/nct6701d/0/fan/2"); custom fan names are keyed on it.
+public sealed record FanReading(string Id, string Name, double Rpm, string Unit = "RPM");
 
 public sealed record SystemInfo(
     string MachineName,

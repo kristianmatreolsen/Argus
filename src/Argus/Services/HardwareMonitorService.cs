@@ -15,7 +15,10 @@ public sealed class HardwareMonitorService : IDisposable
     {
         IsCpuEnabled = true,
         IsGpuEnabled = true,
-        IsMemoryEnabled = true,
+        // RAM usage comes from GlobalMemoryStatusEx. LibreHardwareMonitor's memory module probes DIMM
+        // sensors over SMBus, which on some boards (e.g. ASUS B850 + NCT6701D) makes the Super I/O fan
+        // chip return garbage, so it stays off.
+        IsMemoryEnabled = false,
         IsStorageEnabled = false,
         IsNetworkEnabled = false,
         IsControllerEnabled = true,
@@ -225,7 +228,7 @@ public sealed class HardwareMonitorService : IDisposable
                     string fanLabel = fans.Any(f => f.Name == sensor.Name) ? $"{hardware.Name} {sensor.Name}" : sensor.Name;
                     if (!fans.Any(f => f.Name == fanLabel))
                     {
-                        fans.Add(new FanReading(fanLabel, value));
+                        fans.Add(new FanReading(sensor.Identifier.ToString(), fanLabel, value));
                     }
                 }
             }

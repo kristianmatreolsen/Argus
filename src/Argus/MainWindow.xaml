@@ -195,19 +195,31 @@
                                 DragOver="Card_DragOver"
                                 Drop="Card_Drop">
                             <Grid>
-                                <StackPanel IsHitTestVisible="False" VerticalAlignment="Center">
-                                    <TextBlock Text="FAN SPEED" Foreground="#94A3B8" FontSize="10" FontWeight="Bold" Margin="0,0,0,2" />
-                                    <TextBlock x:Name="FanText" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,2,0,0" />
-                                    <ScrollViewer x:Name="FansScroll" MaxHeight="38" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
+                                <!-- Hit-testable so the fan list can scroll; the card's Preview* drag handlers still fire. -->
+                                <StackPanel VerticalAlignment="Center">
+                                    <DockPanel Margin="0,0,0,3" IsHitTestVisible="False">
+                                        <TextBlock DockPanel.Dock="Right" Text="RPM" Foreground="#64748B" FontSize="8" FontWeight="Bold" VerticalAlignment="Center" />
+                                        <TextBlock Text="FAN SPEED" Foreground="#94A3B8" FontSize="10" FontWeight="Bold" />
+                                    </DockPanel>
+                                    <TextBlock x:Name="FanText" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,2,0,0" IsHitTestVisible="False" />
+                                    <!-- Two columns fit six fans (three rows) without scrolling; scroll only kicks in beyond eight. -->
+                                    <ScrollViewer x:Name="FansScroll" MaxHeight="56" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed" PreviewMouseWheel="FansScroll_PreviewMouseWheel">
                                         <ItemsControl x:Name="FansList">
+                                            <ItemsControl.ItemsPanel>
+                                                <ItemsPanelTemplate>
+                                                    <UniformGrid Columns="2" />
+                                                </ItemsPanelTemplate>
+                                            </ItemsControl.ItemsPanel>
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
-                                                    <TextBlock FontSize="9.5" FontWeight="SemiBold" Foreground="#F8FAFC" Margin="0,0">
-                                                        <Run Text="{Binding Name}" Foreground="#94A3B8" FontSize="8.5" />
-                                                        <Run Text=": " Foreground="#64748B" />
-                                                        <Run Text="{Binding Rpm, StringFormat='{}{0:0}'}" FontWeight="Bold" Foreground="#F8FAFC" />
-                                                        <Run Text="{Binding Unit, StringFormat=' {}'}" Foreground="#64748B" FontSize="8" />
-                                                    </TextBlock>
+                                                    <Grid Margin="0,0,8,2">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <TextBlock Text="{Binding Name}" Foreground="#94A3B8" FontSize="9" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                                                        <TextBlock Grid.Column="1" Text="{Binding Rpm, StringFormat='{}{0:0}', Mode=OneWay}" FontSize="9.5" FontWeight="Bold" Foreground="#F8FAFC" Margin="4,0,0,0" VerticalAlignment="Center" />
+                                                    </Grid>
                                                 </DataTemplate>
                                             </ItemsControl.ItemTemplate>
                                         </ItemsControl>

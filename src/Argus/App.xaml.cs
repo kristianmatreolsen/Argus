@@ -101,7 +101,7 @@ public partial class App : Application
 
         if (settingsWindow is null)
         {
-            settingsWindow = new SettingsWindow(displaySettings);
+            settingsWindow = new SettingsWindow(displaySettings, mainWindow?.CurrentFans ?? Array.Empty<FanReading>());
             settingsWindow.SettingsChanged += ApplyDisplaySettings;
             settingsWindow.Closed += (_, _) => settingsWindow = null;
         }

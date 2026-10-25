@@ -61,6 +61,9 @@ public partial class MainWindow : Window
     public event Action<string>? TelemetryUpdated;
     public string CurrentTelemetry { get; private set; } = "Argus";
 
+    // Latest fan readings with their sensor names, used by Settings to offer renaming.
+    public IReadOnlyList<FanReading> CurrentFans { get; private set; } = Array.Empty<FanReading>();
+
     public MainWindow(HardwareMonitorService hardwareMonitor, DeviceBatteryService deviceBattery, SystemInfoService systemInfo, DisplaySettings settings)
     {
         InitializeComponent();
@@ -233,20 +236,22 @@ public partial class MainWindow : Window
             : "The last app you used in the foreground is not drawing frames.";
 
         // FAN SPEED
-        if (hardware.Fans.Count > 1)
+        CurrentFans = hardware.Fans;
+        IReadOnlyList<FanReading> fans = ApplyFanNames(hardware.Fans);
+        if (fans.Count > 1)
         {
             FanText.Visibility = Visibility.Collapsed;
-            FansList.ItemsSource = hardware.Fans;
+            FansList.ItemsSource = fans;
             FansScroll.Visibility = Visibility.Visible;
-            string fanDetails = string.Join("\n", hardware.Fans.Select(f => $"• {f.Name}: {f.Rpm:0} {f.Unit}"));
-            FanSpeedCard.ToolTip = $"System Fans Detected ({hardware.Fans.Count}):\n{fanDetails}";
+            string fanDetails = string.Join("\n", fans.Select(f => $"• {f.Name}: {f.Rpm:0} {f.Unit}"));
+            FanSpeedCard.ToolTip = $"System Fans Detected ({fans.Count}):\n{fanDetails}";
         }
-        else if (hardware.Fans.Count == 1)
+        else if (fans.Count == 1)
         {
             FansScroll.Visibility = Visibility.Collapsed;
             FanText.Visibility = Visibility.Visible;
-            FanText.Text = $"{hardware.Fans[0].Rpm:0} {hardware.Fans[0].Unit}";
-            FanSpeedCard.ToolTip = $"System Fan: {hardware.Fans[0].Name} ({hardware.Fans[0].Rpm:0} {hardware.Fans[0].Unit})";
+            FanText.Text = $"{fans[0].Rpm:0} {fans[0].Unit}";
+            FanSpeedCard.ToolTip = $"System Fan: {fans[0].Name} ({fans[0].Rpm:0} {fans[0].Unit})";
         }
         else
         {
@@ -276,6 +281,19 @@ public partial class MainWindow : Window
 
         CurrentTelemetry = BuildTelemetry(hardware, devices, system);
         TelemetryUpdated?.Invoke(CurrentTelemetry);
+    }
+
+    // Applies custom names, then lists motherboard fans before GPU fans, each group sorted by name, so
+    // related fans (e.g. "CPU 1" and "CPU 2") sit together instead of following header order.
+    private IReadOnlyList<FanReading> ApplyFanNames(IReadOnlyList<FanReading> fans)
+    {
+        return fans
+            .Select(fan => settings.FanNames.TryGetValue(fan.Id, out string? name) && !string.IsNullOrWhiteSpace(name)
+                ? fan with { Name = name }
+                : fan)
+            .OrderBy(fan => fan.Id.StartsWith("/gpu", StringComparison.OrdinalIgnoreCase))
+            .ThenBy(fan => fan.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
     }
 
     private void SettingsButton_Click(object sender, RoutedEventArgs e)
@@ -543,6 +561,23 @@ public partial class MainWindow : Window
         {
             history.RemoveAt(0);
         }
+    }
+
+    // A ScrollViewer swallows the mouse wheel even when it has nothing to scroll; pass it on to the
+    // dashboard in that case so the page still scrolls while the pointer is over the fan card.
+    private void FansScroll_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (FansScroll.ScrollableHeight > 0 || FansScroll.Parent is not UIElement parent)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        parent.RaiseEvent(new MouseWheelEventArgs(e.MouseDevice, e.Timestamp, e.Delta)
+        {
+            RoutedEvent = MouseWheelEvent,
+            Source = sender
+        });
     }
 
     private void SparklineCanvas_SizeChanged(object sender, SizeChangedEventArgs e)

@@ -1,7 +1,7 @@
 <Window x:Class="Argus.SettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Argus Settings" Width="340" Height="420"
+        Title="Argus Settings" Width="340" Height="560"
         Icon="{StaticResource ArgusLogoSource}"
         ResizeMode="NoResize" WindowStartupLocation="CenterScreen"
         Background="#0F172A" Foreground="#F8FAFC">
@@ -32,6 +32,34 @@
                         <CheckBox x:Name="FanSpeedCheckBox" Content="Fan speed" Margin="0,0,0,10" />
                         <CheckBox x:Name="SystemCheckBox" Content="System information" Margin="0,0,0,10" />
                         <CheckBox x:Name="DevicesCheckBox" Content="Connected devices" />
+                    </StackPanel>
+                </Border>
+
+                <TextBlock Text="FAN NAMES" Foreground="#64748B" FontSize="10" FontWeight="Bold" Margin="0,0,0,4" />
+                <TextBlock Text="Match fans by RPM with Armoury Crate or the BIOS fan monitor. Leave empty to keep the sensor name."
+                           Foreground="#64748B" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,8" />
+                <Border Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="8" Padding="14,10" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock x:Name="NoFansText" Text="No fans are reporting a speed yet." Foreground="#94A3B8" FontSize="11" Visibility="Collapsed" />
+                        <ItemsControl x:Name="FanNamesList">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,3">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="130" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding DefaultName}" Foreground="#F8FAFC" FontSize="11" FontWeight="SemiBold" />
+                                            <TextBlock Text="{Binding RpmText}" Foreground="#64748B" FontSize="10" />
+                                        </StackPanel>
+                                        <TextBox Grid.Column="1" Text="{Binding CustomName, Mode=OneTime}" Tag="{Binding Id}" MaxLength="16"
+                                                 Background="#0F172A" Foreground="#F8FAFC" CaretBrush="#F8FAFC" BorderBrush="#334155" Padding="4,3" FontSize="11"
+                                                 VerticalContentAlignment="Center" LostFocus="FanNameTextBox_LostFocus" KeyDown="FanNameTextBox_KeyDown" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
                     </StackPanel>
                 </Border>
 

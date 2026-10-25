@@ -224,10 +224,13 @@ public partial class MainWindow : Window
         NetworkCard.ToolTip = $"Network Connection • Link Capacity: {linkSpeedStr}\n↓ Download: {FormatRate(hardware.DownloadKilobytesPerSecond, "KB/s")}\n↑ Upload: {FormatRate(hardware.UploadKilobytesPerSecond, "KB/s")}";
 
         // FPS
-        FpsText.Text = hardware.Fps.HasValue ? $"{hardware.Fps.Value:0} FPS" : "0 FPS";
-        FpsCard.ToolTip = hardware.Fps.HasValue && hardware.Fps.Value > 0
-            ? $"Dynamic 3D Render FPS: {hardware.Fps.Value:0} FPS"
-            : "Dynamic FPS: 0 FPS. No displayed frames are currently being detected.";
+        bool hasFps = hardware.Fps > 0;
+        FpsText.Text = hasFps ? $"{hardware.Fps:0} FPS" : "--";
+        FpsText.Foreground = hasFps ? PrimaryTextBrush : MutedTextBrush;
+        FpsStatusText.Text = hasFps ? hardware.FpsApplication : "No game detected";
+        FpsCard.ToolTip = hasFps
+            ? $"{hardware.FpsApplication}: {hardware.Fps:0} displayed frames per second"
+            : "The last app you used in the foreground is not drawing frames.";
 
         // FAN SPEED
         if (hardware.Fans.Count > 1)

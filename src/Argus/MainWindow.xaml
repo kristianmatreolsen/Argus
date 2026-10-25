@@ -181,7 +181,8 @@
                             <Grid>
                                 <StackPanel IsHitTestVisible="False" VerticalAlignment="Center">
                                     <TextBlock Text="FPS" Foreground="#94A3B8" FontSize="10" FontWeight="Bold" />
-                                    <TextBlock x:Name="FpsText" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,6,0,0" />
+                                    <TextBlock x:Name="FpsText" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,3,0,0" />
+                                    <TextBlock x:Name="FpsStatusText" Text="No game detected" Foreground="#64748B" FontSize="9" Margin="0,1,0,0" TextTrimming="CharacterEllipsis" />
                                 </StackPanel>
                             </Grid>
                         </Border>

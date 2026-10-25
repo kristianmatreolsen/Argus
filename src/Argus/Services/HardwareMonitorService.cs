@@ -24,9 +24,7 @@ public sealed class HardwareMonitorService : IDisposable
     private long previousReceivedBytes;
     private long previousSentBytes;
     private DateTime lastNetworkSampleUtc = DateTime.UtcNow;
-    private readonly NvidiaFrameViewService nvidiaFrameView = new();
     private readonly FrameRateService frameRateService = new();
-    private readonly System.Diagnostics.PerformanceCounter? fpsCounter;
     private readonly bool computerOpened;
 
     public HardwareMonitorService()
@@ -40,19 +38,6 @@ public sealed class HardwareMonitorService : IDisposable
         {
             computerOpened = false;
         }
-
-        try
-        {
-            fpsCounter = new System.Diagnostics.PerformanceCounter(
-                "DXGI Graphics",
-                "Frames per second",
-                "_Total",
-                readOnly: true);
-        }
-        catch (Exception)
-        {
-            fpsCounter = null;
-        }
     }
 
     public HardwareReading Read()
@@ -65,8 +50,6 @@ public sealed class HardwareMonitorService : IDisposable
         double? vramUsedMb = null;
         double? vramTotalMb = null;
         double? vramFreeMb = null;
-        double? fanRpm = null;
-        double? fps = null;
         double? cpuUsage = null;
         var fans = new List<FanReading>();
         (double memoryUsagePercent, double memoryUsedGb, double memoryTotalGb) = GetMemoryDetails();
@@ -88,9 +71,7 @@ public sealed class HardwareMonitorService : IDisposable
                         ref vramUsedMb,
                         ref vramTotalMb,
                         ref vramFreeMb,
-                        ref fanRpm,
                         fans,
-                        ref fps,
                         ref cpuUsage);
                 }
             }
@@ -101,29 +82,7 @@ public sealed class HardwareMonitorService : IDisposable
 
         cpuTemperature ??= ReadAcpiTemperature();
         cpuTemperature ??= ReadHwiNfoTemperature();
-        double nvidiaFps = nvidiaFrameView.ReadFps();
-        if (nvidiaFps > 0)
-        {
-            fps = nvidiaFps;
-        }
-        else
-        {
-            double presentMonFps = frameRateService.ReadFps();
-            if (presentMonFps > 0)
-            {
-                fps = presentMonFps;
-            }
-        }
-
-        fps ??= ReadPerformanceCounterFps();
-        fps = Math.Max(0d, fps ?? 0d);
-
-        double gpuFanRpm = nvidiaFrameView.ReadGpuFanRpm();
-        if (gpuFanRpm > 0 && !fans.Any(fan => fan.Name.Equals("NVIDIA GPU Fan", StringComparison.OrdinalIgnoreCase)))
-        {
-            fans.Add(new FanReading("NVIDIA GPU Fan", gpuFanRpm));
-            fanRpm = Max(fanRpm, (float)gpuFanRpm);
-        }
+        FrameRateReading frameRate = frameRateService.ReadFps();
 
         double? finalGpuTemp = gpuCoreTemperature ?? gpuTemperature;
 
@@ -151,9 +110,9 @@ public sealed class HardwareMonitorService : IDisposable
             memoryUsagePercent,
             memoryUsedGb,
             memoryTotalGb,
-            fanRpm,
             fans,
-            fps,
+            frameRate.Fps,
+            frameRate.Application,
             networkSpeed.DownloadKilobytesPerSecond,
             networkSpeed.UploadKilobytesPerSecond,
             networkSpeed.LinkSpeedText);
@@ -162,8 +121,6 @@ public sealed class HardwareMonitorService : IDisposable
     public void Dispose()
     {
         frameRateService.Dispose();
-        nvidiaFrameView.Dispose();
-        fpsCounter?.Dispose();
         if (computerOpened)
         {
             computer.Close();
@@ -180,9 +137,7 @@ public sealed class HardwareMonitorService : IDisposable
         ref double? vramUsedMb,
         ref double? vramTotalMb,
         ref double? vramFreeMb,
-        ref double? fanRpm,
         List<FanReading> fans,
-        ref double? fps,
         ref double? cpuUsage)
     {
         try
@@ -193,13 +148,6 @@ public sealed class HardwareMonitorService : IDisposable
                 if (sensor.Value is not float value)
                 {
                     continue;
-                }
-
-                if (value >= 0 && (sensor.Name.Contains("FPS", StringComparison.OrdinalIgnoreCase) ||
-                    sensor.Name.Contains("Frame Rate", StringComparison.OrdinalIgnoreCase) ||
-                    sensor.Name.Contains("Framerate", StringComparison.OrdinalIgnoreCase)))
-                {
-                    fps = value;
                 }
 
                 if (sensor.SensorType == SensorType.Temperature && IsValidTemperature(value))
@@ -273,8 +221,8 @@ public sealed class HardwareMonitorService : IDisposable
                 }
                 else if (sensor.SensorType == SensorType.Fan && value > 0)
                 {
-                    fanRpm = Max(fanRpm, value);
-                    string fanLabel = $"{hardware.Name} - {sensor.Name}";
+                    // Short sensor names read better ("GPU Fan 1"); add the hardware name only to tell duplicates apart.
+                    string fanLabel = fans.Any(f => f.Name == sensor.Name) ? $"{hardware.Name} {sensor.Name}" : sensor.Name;
                     if (!fans.Any(f => f.Name == fanLabel))
                     {
                         fans.Add(new FanReading(fanLabel, value));
@@ -300,9 +248,7 @@ public sealed class HardwareMonitorService : IDisposable
                     ref vramUsedMb,
                     ref vramTotalMb,
                     ref vramFreeMb,
-                    ref fanRpm,
                     fans,
-                    ref fps,
                     ref cpuUsage);
             }
         }
@@ -393,24 +339,6 @@ public sealed class HardwareMonitorService : IDisposable
         }
 
         return true;
-    }
-
-    private double? ReadPerformanceCounterFps()
-    {
-        if (fpsCounter is null)
-        {
-            return null;
-        }
-
-        try
-        {
-            float sample = fpsCounter.NextValue();
-            return sample > 0 ? sample : null;
-        }
-        catch (Exception)
-        {
-            return null;
-        }
     }
 
     private NetworkSpeed ReadNetworkSpeed()
@@ -539,9 +467,9 @@ public sealed record HardwareReading(
     double MemoryUsagePercent,
     double MemoryUsedGb,
     double MemoryTotalGb,
-    double? FanRpm,
     IReadOnlyList<FanReading> Fans,
-    double? Fps,
+    double Fps,
+    string? FpsApplication,
     double DownloadKilobytesPerSecond,
     double UploadKilobytesPerSecond,
     string? NetworkLinkSpeedText);

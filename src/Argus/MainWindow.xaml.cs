@@ -35,6 +35,20 @@ public partial class MainWindow : Window
     private bool _isCardMouseDown;
     private FrameworkElement? _draggedCard;
 
+    private static readonly Brush PrimaryTextBrush = CreateFrozenBrush(0xF8, 0xFA, 0xFC);
+    private static readonly Brush MutedTextBrush = CreateFrozenBrush(0x64, 0x74, 0x8B);
+
+    // Warning / critical thresholds. Modern GPUs run 65–80°C under load and current desktop CPUs
+    // boost up to ~95°C by design, so lower limits would flag normal gaming sessions.
+    private const double GpuTempWarning = 80;
+    private const double GpuTempCritical = 87;
+    private const double CpuTempWarning = 85;
+    private const double CpuTempCritical = 95;
+    private const double CpuLoadWarning = 85;
+    private const double CpuLoadCritical = 95;
+    private const double MemoryWarning = 85;
+    private const double MemoryCritical = 95;
+
     private const int MaxHistoryPoints = 30;
     private readonly List<double> gpuTempHistory = new();
     private readonly List<double> gpuLoadHistory = new();
@@ -246,13 +260,11 @@ public partial class MainWindow : Window
         DeviceList.ItemsSource = devices;
         EmptyDevicesText.Visibility = devices.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
-        AddHistoryPoint(gpuTempHistory, hardware.GpuTemperature ?? 0);
-        AddHistoryPoint(gpuLoadHistory, hardware.GpuUsage ?? 0);
-        AddHistoryPoint(cpuTempHistory, hardware.CpuTemperature ?? 0);
-        if (hardware.CpuUsage.HasValue)
-        {
-            AddHistoryPoint(cpuLoadHistory, hardware.CpuUsage.Value);
-        }
+        // Only record real readings so an unavailable sensor doesn't draw a drop to zero.
+        AddHistoryPoint(gpuTempHistory, hardware.GpuTemperature);
+        AddHistoryPoint(gpuLoadHistory, hardware.GpuUsage);
+        AddHistoryPoint(cpuTempHistory, hardware.CpuTemperature);
+        AddHistoryPoint(cpuLoadHistory, hardware.CpuUsage);
         AddHistoryPoint(memoryHistory, hardware.MemoryUsagePercent);
         AddHistoryPoint(downloadHistory, hardware.DownloadKilobytesPerSecond);
         AddHistoryPoint(uploadHistory, hardware.UploadKilobytesPerSecond);
@@ -516,9 +528,14 @@ public partial class MainWindow : Window
         }
     }
 
-    private void AddHistoryPoint(List<double> history, double value)
+    private void AddHistoryPoint(List<double> history, double? value)
     {
-        history.Add(value);
+        if (value is null)
+        {
+            return;
+        }
+
+        history.Add(value.Value);
         if (history.Count > MaxHistoryPoints)
         {
             history.RemoveAt(0);
@@ -532,24 +549,41 @@ public partial class MainWindow : Window
 
     private void RenderAllSparklines()
     {
-        double currentGpuTemp = gpuTempHistory.Count > 0 ? gpuTempHistory[^1] : 0;
-        double currentGpuLoad = gpuLoadHistory.Count > 0 ? gpuLoadHistory[^1] : 0;
-        double currentCpuTemp = cpuTempHistory.Count > 0 ? cpuTempHistory[^1] : 0;
-        double currentCpuLoad = cpuLoadHistory.Count > 0 ? cpuLoadHistory[^1] : 0;
-        double currentMem = memoryHistory.Count > 0 ? memoryHistory[^1] : 0;
+        // Colour follows a short rolling average so a one-second spike doesn't flash the card amber.
+        var (gpuTempStroke, gpuTempFill) = GetThresholdColors(RecentAverage(gpuTempHistory), GpuTempWarning, GpuTempCritical);
+        var (cpuTempStroke, cpuTempFill) = GetThresholdColors(RecentAverage(cpuTempHistory), CpuTempWarning, CpuTempCritical);
+        var (cpuLoadStroke, cpuLoadFill) = GetThresholdColors(RecentAverage(cpuLoadHistory), CpuLoadWarning, CpuLoadCritical);
+        var (memStroke, memFill) = GetThresholdColors(RecentAverage(memoryHistory), MemoryWarning, MemoryCritical);
+        // A fully loaded GPU while gaming is expected, so GPU load never changes colour.
+        var (gpuLoadStroke, gpuLoadFill) = GetThresholdColors(0, double.PositiveInfinity, double.PositiveInfinity);
 
-        var (gpuTempStroke, gpuTempFill) = GetThresholdColors(currentGpuTemp, warningVal: 70, criticalVal: 82);
-        var (gpuLoadStroke, gpuLoadFill) = GetThresholdColors(currentGpuLoad, warningVal: 75, criticalVal: 90);
-        var (cpuTempStroke, cpuTempFill) = GetThresholdColors(currentCpuTemp, warningVal: 75, criticalVal: 88);
-        var (cpuLoadStroke, cpuLoadFill) = GetThresholdColors(currentCpuLoad, warningVal: 75, criticalVal: 90);
-        var (memStroke, memFill) = GetThresholdColors(currentMem, warningVal: 80, criticalVal: 92);
+        var (gpuTempMin, gpuTempMax) = GetTemperatureRange(gpuTempHistory);
+        var (cpuTempMin, cpuTempMax) = GetTemperatureRange(cpuTempHistory);
 
-        RenderSparkline(GpuTempSparklineCanvas, gpuTempHistory, minVal: 0, maxVal: 100, unitLabel: "°C", strokeColor: gpuTempStroke, fillColor: gpuTempFill, warningThreshold: 70);
-        RenderSparkline(GpuLoadSparklineCanvas, gpuLoadHistory, minVal: 0, maxVal: 100, unitLabel: "%", strokeColor: gpuLoadStroke, fillColor: gpuLoadFill, warningThreshold: 75);
-        RenderSparkline(CpuTempSparklineCanvas, cpuTempHistory, minVal: 0, maxVal: 100, unitLabel: "°C", strokeColor: cpuTempStroke, fillColor: cpuTempFill, warningThreshold: 75);
-        RenderSparkline(CpuLoadSparklineCanvas, cpuLoadHistory, minVal: 0, maxVal: 100, unitLabel: "%", strokeColor: cpuLoadStroke, fillColor: cpuLoadFill, warningThreshold: 75);
-        RenderSparkline(MemorySparklineCanvas, memoryHistory, minVal: 0, maxVal: 100, unitLabel: "%", strokeColor: memStroke, fillColor: memFill, warningThreshold: 80);
+        RenderSparkline(GpuTempSparklineCanvas, gpuTempHistory, minVal: gpuTempMin, maxVal: gpuTempMax, strokeColor: gpuTempStroke, fillColor: gpuTempFill, warningThreshold: GpuTempWarning);
+        RenderSparkline(GpuLoadSparklineCanvas, gpuLoadHistory, minVal: 0, maxVal: 100, strokeColor: gpuLoadStroke, fillColor: gpuLoadFill);
+        RenderSparkline(CpuTempSparklineCanvas, cpuTempHistory, minVal: cpuTempMin, maxVal: cpuTempMax, strokeColor: cpuTempStroke, fillColor: cpuTempFill, warningThreshold: CpuTempWarning);
+        RenderSparkline(CpuLoadSparklineCanvas, cpuLoadHistory, minVal: 0, maxVal: 100, strokeColor: cpuLoadStroke, fillColor: cpuLoadFill, warningThreshold: CpuLoadWarning);
+        RenderSparkline(MemorySparklineCanvas, memoryHistory, minVal: 0, maxVal: 100, strokeColor: memStroke, fillColor: memFill, warningThreshold: MemoryWarning);
         RenderDualSparkline(NetworkSparklineCanvas, downloadHistory, uploadHistory, downColor: Color.FromRgb(0x73, 0xBF, 0x69), upColor: Color.FromRgb(0xB8, 0x77, 0xD9));
+    }
+
+    private static double RecentAverage(List<double> history)
+    {
+        const int window = 5;
+        if (history.Count == 0)
+        {
+            return 0;
+        }
+
+        int start = Math.Max(0, history.Count - window);
+        double sum = 0;
+        for (int i = start; i < history.Count; i++)
+        {
+            sum += history[i];
+        }
+
+        return sum / (history.Count - start);
     }
 
     private static (Color stroke, Color fill) GetThresholdColors(double currentVal, double warningVal, double criticalVal)
@@ -568,7 +602,29 @@ public partial class MainWindow : Window
         return (blue, Color.FromArgb(0x35, 0x57, 0x94, 0xF2));
     }
 
-    private static void RenderSparkline(Canvas canvas, List<double> history, double minVal, double maxVal, string unitLabel, Color strokeColor, Color fillColor, double? warningThreshold = null)
+    // Temperatures rarely leave the 30–90°C band, so a fixed 0–100 scale flattens them. Follow the
+    // observed values instead, but keep at least a 20°C span so sensor jitter doesn't fill the graph.
+    private static (double min, double max) GetTemperatureRange(List<double> history)
+    {
+        const double minimumSpan = 20;
+        if (history.Count == 0)
+        {
+            return (20, 100);
+        }
+
+        double low = history.Min() - 5;
+        double high = history.Max() + 5;
+        if (high - low < minimumSpan)
+        {
+            double center = (low + high) / 2;
+            low = center - (minimumSpan / 2);
+            high = center + (minimumSpan / 2);
+        }
+
+        return (Math.Max(0, Math.Floor(low)), Math.Ceiling(high));
+    }
+
+    private static void RenderSparkline(Canvas canvas, List<double> history, double minVal, double maxVal, Color strokeColor, Color fillColor, double? warningThreshold = null)
     {
         canvas.Children.Clear();
         if (history.Count < 2)
@@ -592,24 +648,10 @@ public partial class MainWindow : Window
         const double paddingY = 2;
         double usableHeight = height - (paddingY * 2);
 
-        // 1. Mid grid guide line
-        double midY = height - paddingY - (0.5 * usableHeight);
-        var gridLine = new Line
+        // 1. Warning threshold line, only when it falls inside the visible range
+        if (warningThreshold is double threshold && threshold > minVal && threshold < maxVal)
         {
-            X1 = 0,
-            Y1 = midY,
-            X2 = width,
-            Y2 = midY,
-            Stroke = new SolidColorBrush(Color.FromRgb(0x33, 0x41, 0x55)),
-            StrokeThickness = 0.8,
-            StrokeDashArray = new DoubleCollection { 2, 2 }
-        };
-        canvas.Children.Add(gridLine);
-
-        // 2. Warning threshold line
-        if (warningThreshold.HasValue)
-        {
-            double warnNorm = Math.Clamp((warningThreshold.Value - minVal) / range, 0, 1);
+            double warnNorm = (threshold - minVal) / range;
             double warnY = height - paddingY - (warnNorm * usableHeight);
             var warnLine = new Line
             {
@@ -617,37 +659,14 @@ public partial class MainWindow : Window
                 Y1 = warnY,
                 X2 = width,
                 Y2 = warnY,
-                Stroke = new SolidColorBrush(Color.FromArgb(0x50, 0xFF, 0x98, 0x30)),
+                Stroke = new SolidColorBrush(Color.FromArgb(0x70, 0xFF, 0x98, 0x30)),
                 StrokeThickness = 0.8,
                 StrokeDashArray = new DoubleCollection { 3, 2 }
             };
             canvas.Children.Add(warnLine);
         }
 
-        // 3. Max and Min Y-axis labels
-        var maxText = new TextBlock
-        {
-            Text = $"{maxVal}{unitLabel}",
-            FontSize = 8,
-            Foreground = new SolidColorBrush(Color.FromRgb(0x64, 0x74, 0x8B)),
-            FontWeight = FontWeights.Bold
-        };
-        Canvas.SetRight(maxText, 2);
-        Canvas.SetTop(maxText, 0);
-        canvas.Children.Add(maxText);
-
-        var minText = new TextBlock
-        {
-            Text = $"{minVal}{unitLabel}",
-            FontSize = 8,
-            Foreground = new SolidColorBrush(Color.FromRgb(0x64, 0x74, 0x8B)),
-            FontWeight = FontWeights.Bold
-        };
-        Canvas.SetRight(minText, 2);
-        Canvas.SetBottom(minText, 0);
-        canvas.Children.Add(minText);
-
-        // 4. Area and trend line
+        // 2. Area and trend line
         double stepX = width / (history.Count - 1);
         PointCollection linePoints = new();
         PointCollection areaPoints = new() { new Point(0, height) };
@@ -712,33 +731,8 @@ public partial class MainWindow : Window
         double max1 = history1.Count > 0 ? history1.Max() : 0;
         double max2 = history2.Count > 0 ? history2.Max() : 0;
         double peakObserved = Math.Max(max1, max2);
-        double maxVal = Math.Max(peakObserved * 1.25d, 10d); // Minimum 10 KB/s scale
-
-        // Grid guide line
-        var gridLine = new Line
-        {
-            X1 = 0,
-            Y1 = height * 0.5,
-            X2 = width,
-            Y2 = height * 0.5,
-            Stroke = new SolidColorBrush(Color.FromRgb(0x33, 0x41, 0x55)),
-            StrokeThickness = 0.8,
-            StrokeDashArray = new DoubleCollection { 2, 2 }
-        };
-        canvas.Children.Add(gridLine);
-
-        // Dynamic scale max label placed at top right
-        string maxTextStr = FormatRate(maxVal, "KB/s");
-        var maxText = new TextBlock
-        {
-            Text = maxTextStr,
-            FontSize = 8,
-            Foreground = new SolidColorBrush(Color.FromRgb(0x64, 0x74, 0x8B)),
-            FontWeight = FontWeights.Bold
-        };
-        Canvas.SetRight(maxText, 2);
-        Canvas.SetTop(maxText, 2);
-        canvas.Children.Add(maxText);
+        // A 100 KB/s floor keeps idle background traffic from looking like activity.
+        double maxVal = Math.Max(peakObserved * 1.25d, 100d);
 
         DrawSinglePolyline(canvas, history1, width, height, maxVal, downColor, Color.FromArgb(0x30, downColor.R, downColor.G, downColor.B), isDashed: false);
         DrawSinglePolyline(canvas, history2, width, height, maxVal, upColor, Color.FromArgb(0x20, upColor.R, upColor.G, upColor.B), isDashed: true);
@@ -809,9 +803,14 @@ public partial class MainWindow : Window
         IReadOnlyList<DeviceBattery> Devices,
         SystemInfo System);
 
-    private static string FormatMetric(double? value, string suffix) => value is null ? "--" : $"{value:0}{suffix}";
+    private static Brush CreateFrozenBrush(byte r, byte g, byte b)
+    {
+        var brush = new SolidColorBrush(Color.FromRgb(r, g, b));
+        brush.Freeze();
+        return brush;
+    }
 
-    private static string FormatFan(double? value) => value is null or <= 0 ? "--" : $"{value:0} RPM";
+    private static string FormatMetric(double? value, string suffix) => value is null ? "--" : $"{value:0}{suffix}";
 
     private static string FormatRate(double value, string unit)
     {
@@ -826,7 +825,8 @@ public partial class MainWindow : Window
             return mb >= 100 ? $"{mb:0} MB/s" : $"{mb:0.#} MB/s";
         }
 
-        return $"{value:0} {unit}";
+        // One decimal for small rates so light traffic doesn't read as "0 KB/s".
+        return value < 10 ? $"{value:0.0} {unit}" : $"{value:0} {unit}";
     }
 
     private string BuildTelemetry(HardwareReading hardware, IReadOnlyList<DeviceBattery> devices, SystemInfo system)

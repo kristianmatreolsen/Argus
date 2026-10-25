@@ -7,6 +7,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Argus</AssemblyName>
+    <!-- Local builds are marked as dev builds; the release workflow passes the version from the git tag. -->
+    <Version>0.0.0-dev</Version>
     <RootNamespace>Argus</RootNamespace>
     <ApplicationIcon>ArgusIcon.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>

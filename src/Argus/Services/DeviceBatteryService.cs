@@ -24,32 +24,36 @@ public sealed class DeviceBatteryService
                 TryAddWindowsBattery(devices, device);
             }
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            AppLog.WarnOnce("battery-windows", "Listing Windows battery devices failed", exception);
         }
 
         try
         {
             AddPairedBluetoothDevices(devices, BluetoothDevice.GetDeviceSelectorFromPairingState(true));
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            AppLog.WarnOnce("battery-bluetooth", "Listing paired Bluetooth devices failed", exception);
         }
 
         try
         {
             ReadBluetoothLeBatteries(devices);
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            AppLog.WarnOnce("battery-ble", "Reading Bluetooth LE batteries failed", exception);
         }
 
         try
         {
             ReadHidBatteries(devices);
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            AppLog.WarnOnce("battery-hid", "Reading USB headset batteries failed", exception);
         }
 
         return devices

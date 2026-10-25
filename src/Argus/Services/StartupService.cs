@@ -159,17 +159,25 @@ public static class StartupService
                 StandardOutputEncoding = Encoding.UTF8
             })!;
             output = process.StandardOutput.ReadToEnd();
-            process.StandardError.ReadToEnd();
+            string error = process.StandardError.ReadToEnd();
             if (!process.WaitForExit(10_000))
             {
                 process.Kill();
+                AppLog.Warn($"schtasks {arguments} timed out");
                 return false;
+            }
+
+            // "/Query" failing just means the task does not exist; only log changes that failed.
+            if (process.ExitCode != 0 && !arguments.StartsWith("/Query", StringComparison.Ordinal))
+            {
+                AppLog.Warn($"schtasks {arguments} failed (exit code {process.ExitCode}): {error.Trim()}");
             }
 
             return process.ExitCode == 0;
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            AppLog.Warn($"Running schtasks {arguments} failed", exception);
             return false;
         }
     }
@@ -206,8 +214,9 @@ public static class StartupService
             key.SetValue(AppName, $"\"{exePath}\"", RegistryValueKind.String);
             return true;
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            AppLog.Warn("Adding Argus to the Run key failed", exception);
             return false;
         }
     }

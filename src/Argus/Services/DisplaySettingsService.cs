@@ -20,10 +20,13 @@ public sealed class DisplaySettingsService
         DisplaySettings settings;
         try
         {
-            settings = JsonSerializer.Deserialize<DisplaySettings>(File.ReadAllText(settingsPath)) ?? new DisplaySettings();
+            settings = File.Exists(settingsPath)
+                ? JsonSerializer.Deserialize<DisplaySettings>(File.ReadAllText(settingsPath)) ?? new DisplaySettings()
+                : new DisplaySettings();
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            AppLog.Warn($"Settings file {settingsPath} could not be read; using defaults", exception);
             settings = new DisplaySettings();
         }
 
@@ -47,13 +50,21 @@ public sealed class DisplaySettingsService
             appliedStartWithWindows = settings.StartWithWindows;
         }
 
-        string? directory = Path.GetDirectoryName(settingsPath);
-        if (directory is not null)
+        try
         {
-            Directory.CreateDirectory(directory);
+            string? directory = Path.GetDirectoryName(settingsPath);
+            if (directory is not null)
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            File.WriteAllText(settingsPath, JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch (Exception exception)
+        {
+            AppLog.WarnOnce("settings-save", $"Saving settings to {settingsPath} failed", exception);
         }
 
-        File.WriteAllText(settingsPath, JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true }));
         return startupUpdated;
     }
 }

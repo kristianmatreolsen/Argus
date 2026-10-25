@@ -14,13 +14,13 @@
   - **CPU**: Core Package Temperature (`°C`) & Total CPU Utilization (`%`).
   - **Memory**: System RAM utilization (`%`) and physical memory breakdown (`GB used / total`).
   - **Network**: Independent Download (`↓`) and Upload (`↑`) rates with automatic peak bandwidth scaling and network adapter link capacity (e.g. `1 Gbps`, `2.5 Gbps`).
-  - **FPS**: Best-effort live framerate tracking using supported Windows counters and optional FrameView or PresentMon providers.
-  - **Fan Speed**: RPM tracking across all active system, case, and GPU cooling fans.
+  - **FPS**: Live framerate of the app you last had in the foreground (opening the dashboard doesn't reset it), using a locally installed PresentMon (bundled with AMD Software, RivaTuner Statistics Server or NVIDIA FrameView) or one placed next to `Argus.exe`.
+  - **Fan Speed**: RPM tracking across all active system, case, and GPU cooling fans, with custom fan names (fans are listed alphabetically by name).
 
 - **📈 Grafana-Style Time-Series Graphs**:
   - Hardware-accelerated vector sparklines with 30-second rolling trend history.
-  - Dynamic Y-axis auto-scaling and reference guide lines.
-  - **Smart Threshold Alerts**: Colors dynamically shift from neutral Grafana Blue (`#5794F2`) to Amber (`#FF9830`) on warning thresholds and Red (`#F2495C`) on critical loads.
+  - Temperature graphs auto-scale to recent readings; a dashed line marks the warning threshold.
+  - **Smart Threshold Alerts**: Colors shift from neutral Grafana Blue (`#5794F2`) to Amber (`#FF9830`) on warning thresholds and Red (`#F2495C`) on critical loads, based on a 5-second average so brief spikes don't trigger them.
 
 - **🖐️ Full Drag & Drop Customization**:
   - Drag and drop **section blocks** (`METRICS`, `SYSTEM`, `DEVICES`) to reorder the main view.
@@ -52,7 +52,7 @@
 | **Operating System** | Windows 10 / Windows 11 (64-bit) |
 | **Users (Standalone Executable)** | **No runtime installation needed!** Download and run `Argus.exe`. |
 | **SDK (Developers)** | [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) |
-| **Permissions** | Standard user mode. Some hardware sensors may require administrator access or vendor software and may be unavailable otherwise. |
+| **Permissions** | Standard user mode. CPU temperature and motherboard fan sensors usually require running Argus as administrator. Vendor utilities that access the same sensor chip (e.g. ASUS Armoury Crate) can make motherboard fans unavailable. |
 
 ---
 
@@ -91,6 +91,7 @@
 - **Accessing the Dashboard**: Click the Argus eye icon in your Windows taskbar system tray (bottom-right notification area) to pop up the dashboard.
 - **Settings Flyout**: Click the **SETTINGS** button in the top-right corner of the dashboard or right-click the system tray icon and select **Settings**.
   - Toggle visibility for metric cards, system information, connected devices, and tray battery details.
+  - Give fans custom names (e.g. `CPU 1`, `Front`); each fan's live RPM is shown to help match it to its motherboard header.
   - Enable **Start Argus on Windows startup** to launch the current executable when the current Windows user signs in. If Windows cannot update the startup registration, Argus keeps the existing setting and shows a warning.
 - **Reordering Elements**:
   - Click and drag any **section header card** up or down to reorder sections.

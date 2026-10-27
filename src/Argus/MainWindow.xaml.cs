@@ -357,9 +357,22 @@ public partial class MainWindow : Window
     // wants it somewhere else. Buttons in the header handle their own clicks.
     private void Header_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
+        // DragMove throws when the button is no longer down (fast clicks, pen and touch input).
+        if (e.ButtonState != MouseButtonState.Pressed)
+        {
+            return;
+        }
+
         double left = Left;
         double top = Top;
-        DragMove();
+        try
+        {
+            DragMove();
+        }
+        catch (InvalidOperationException)
+        {
+            return;
+        }
         if (Math.Abs(Left - left) > 4 || Math.Abs(Top - top) > 4)
         {
             if (settings.IsPinned)
@@ -580,14 +593,16 @@ public partial class MainWindow : Window
         bool hasFps = hardware.Fps > 0;
         FpsText.Text = hasFps ? $"{hardware.Fps:0} FPS" : "--";
         FpsText.Foreground = hasFps ? PrimaryTextBrush : MutedTextBrush;
-        FpsStatusText.Text = hasFps ? hardware.FpsApplication : "No game detected";
+        FpsStatusText.Text = hasFps ? hardware.FpsApplication : hardware.FpsAvailable ? "No game detected" : "FPS unavailable";
         FpsLowText.Text = hasFps && hardware.FpsOnePercentLow is double low ? $"1% low {low:0}" : string.Empty;
         FpsCard.ToolTip = hasFps
             ? $"{hardware.FpsApplication}: {hardware.Fps:0} displayed frames per second" +
               (hardware.FpsOnePercentLow is double onePercentLow
                   ? $"\n1% low: {onePercentLow:0} FPS (the slowest 1% of frames over the last 10 seconds)"
                   : string.Empty)
-            : "The last app you used in the foreground is not drawing frames.";
+            : hardware.FpsAvailable
+                ? "The app in the foreground is not a game, or is not drawing frames."
+                : "PresentMon could not be started, so FPS can't be measured. See the log (Settings → Open log folder).";
 
         // FAN SPEED
         IReadOnlyList<FanReading> fans = ApplyFanNames(hardware.Fans);

@@ -137,7 +137,8 @@ public sealed class DeviceBatteryService
 
                 GattDeviceServicesResult services = device.GetGattServicesForUuidAsync(
                     GattServiceUuids.Battery, BluetoothCacheMode.Uncached).AsTask().GetAwaiter().GetResult();
-                GattDeviceService? batteryService = services.Services.FirstOrDefault();
+                // Disposing the service releases the GATT session instead of keeping the device busy until GC.
+                using GattDeviceService? batteryService = services.Services.FirstOrDefault();
                 if (batteryService is null)
                 {
                     continue;

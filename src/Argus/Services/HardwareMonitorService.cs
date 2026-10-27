@@ -31,8 +31,9 @@ public sealed class HardwareMonitorService : IDisposable
         IsControllerEnabled = true,
         IsMotherboardEnabled = true
     };
-    private long previousReceivedBytes;
-    private long previousSentBytes;
+    // Byte counters per adapter from the previous sample. Rates only count adapters present in both
+    // samples, so an adapter that comes up doesn't add its whole lifetime counter as one spike.
+    private Dictionary<string, (long Received, long Sent)> previousAdapterBytes = new();
     private DateTime lastNetworkSampleUtc = DateTime.UtcNow;
     private DateTime storageUpdatedAtUtc = DateTime.MinValue;
     private readonly FrameRateService frameRateService = new();
@@ -112,6 +113,7 @@ public sealed class HardwareMonitorService : IDisposable
             memoryTotalGb,
             readings.Fans,
             readings.Disks,
+            frameRateService.IsMeasuring,
             frameRate.Fps,
             frameRate.OnePercentLow,
             frameRate.Application,
@@ -174,15 +176,13 @@ public sealed class HardwareMonitorService : IDisposable
                 {
                     if (hardware.HardwareType == HardwareType.Cpu)
                     {
-                        readings.CpuTemperature = Max(readings.CpuTemperature, value);
+                        readings.OfferCpuTemperature(CpuTemperaturePriority(sensor.Name), value);
                     }
-                    else if (hardware.HardwareType is HardwareType.Motherboard)
+                    else if (hardware.HardwareType is HardwareType.Motherboard or HardwareType.SuperIO &&
+                             sensor.Name.Contains("CPU", StringComparison.OrdinalIgnoreCase))
                     {
-                        if (sensor.Name.Contains("CPU", StringComparison.OrdinalIgnoreCase) ||
-                            sensor.Name.Contains("Package", StringComparison.OrdinalIgnoreCase))
-                        {
-                            readings.CpuTemperature = Max(readings.CpuTemperature, value);
-                        }
+                        // Board sensor near the socket: only used when the CPU reports no temperature itself.
+                        readings.OfferCpuTemperature(MotherboardCpuTemperaturePriority, value);
                     }
                     else if (gpu is not null)
                     {
@@ -308,6 +308,37 @@ public sealed class HardwareMonitorService : IDisposable
         }
     }
 
+    private const int MotherboardCpuTemperaturePriority = 5;
+
+    // Lower is better; -1 means "not a CPU temperature". Intel also reports "Distance to TjMax" values as
+    // temperatures, and Ryzen chips with a Tctl offset report Tctl above the real die temperature.
+    private static int CpuTemperaturePriority(string name)
+    {
+        if (name.Contains("Distance", StringComparison.OrdinalIgnoreCase))
+        {
+            return -1;
+        }
+
+        if (name.Equals("CPU Package", StringComparison.OrdinalIgnoreCase) ||
+            name.Equals("Core (Tdie)", StringComparison.OrdinalIgnoreCase))
+        {
+            return 0;
+        }
+
+        if (name.Equals("Core (Tctl/Tdie)", StringComparison.OrdinalIgnoreCase))
+        {
+            return 1;
+        }
+
+        if (name.Equals("Core Max", StringComparison.OrdinalIgnoreCase))
+        {
+            return 2;
+        }
+
+        // Other core/CCD sensors: the highest of them.
+        return 3;
+    }
+
     // NVMe drives report "Composite Temperature" plus per-sensor values and the drive's own warning and
     // critical limits; SATA drives report "Temperature". Remaining life is "Life" (NVMe) or "Remaining Life".
     private static void ReadDiskSensor(DiskSensors disk, ISensor sensor, float value)
@@ -339,12 +370,13 @@ public sealed class HardwareMonitorService : IDisposable
     }
 
     // With an integrated and a dedicated GPU (most laptops, and desktops with an iGPU enabled), show the
-    // dedicated one: it has the most dedicated memory (an iGPU only reserves a few hundred MB). Ties go to
-    // NVIDIA, then AMD, then Intel.
+    // dedicated one. NVIDIA GPUs are always dedicated, so they win; otherwise the GPU with the most
+    // dedicated memory (an iGPU usually reserves only a few hundred MB). Remaining ties: AMD, then Intel.
     private static GpuSensors? SelectPrimaryGpu(List<GpuSensors> gpus)
     {
         return gpus
-            .OrderByDescending(gpu => gpu.VramTotalMb ?? 0)
+            .OrderBy(gpu => gpu.Type == HardwareType.GpuNvidia ? 0 : 1)
+            .ThenByDescending(gpu => gpu.VramTotalMb ?? 0)
             .ThenBy(gpu => gpu.Type switch
             {
                 HardwareType.GpuNvidia => 0,
@@ -356,7 +388,28 @@ public sealed class HardwareMonitorService : IDisposable
 
     private sealed class SensorReadings
     {
-        public double? CpuTemperature { get; set; }
+        private int cpuTemperaturePriority = int.MaxValue;
+
+        public double? CpuTemperature { get; private set; }
+
+        public void OfferCpuTemperature(int priority, double value)
+        {
+            if (priority < 0)
+            {
+                return;
+            }
+
+            if (priority < cpuTemperaturePriority)
+            {
+                cpuTemperaturePriority = priority;
+                CpuTemperature = value;
+            }
+            else if (priority == cpuTemperaturePriority)
+            {
+                CpuTemperature = Math.Max(CpuTemperature ?? value, value);
+            }
+        }
+
         public double? CpuUsage { get; set; }
         public double? CpuPower { get; set; }
         public List<GpuSensors> Gpus { get; } = new();
@@ -392,9 +445,10 @@ public sealed class HardwareMonitorService : IDisposable
 
     private NetworkSpeed ReadNetworkSpeed()
     {
-        long totalReceived = 0;
-        long totalSent = 0;
+        long receivedDelta = 0;
+        long sentDelta = 0;
         long maxSpeedBps = 0;
+        var adapterBytes = new Dictionary<string, (long Received, long Sent)>();
 
         NetworkInterface[] networkInterfaces;
         try
@@ -422,8 +476,14 @@ public sealed class HardwareMonitorService : IDisposable
                 }
 
                 IPv4InterfaceStatistics statistics = networkInterface.GetIPv4Statistics();
-                totalReceived += checked((long)statistics.BytesReceived);
-                totalSent += checked((long)statistics.BytesSent);
+                (long Received, long Sent) current = (statistics.BytesReceived, statistics.BytesSent);
+                adapterBytes[networkInterface.Id] = current;
+                if (previousAdapterBytes.TryGetValue(networkInterface.Id, out (long Received, long Sent) previous))
+                {
+                    // Counters can reset (e.g. driver restart); a negative delta counts as nothing.
+                    receivedDelta += Math.Max(0, current.Received - previous.Received);
+                    sentDelta += Math.Max(0, current.Sent - previous.Sent);
+                }
             }
             catch (Exception exception)
             {
@@ -433,16 +493,10 @@ public sealed class HardwareMonitorService : IDisposable
 
         DateTime now = DateTime.UtcNow;
         double elapsedSeconds = Math.Max((now - lastNetworkSampleUtc).TotalSeconds, 0.5d);
-        // Totals drop when an adapter goes down; clamp so that sample reads as 0 instead of negative.
-        double downloadKilobytesPerSecond = previousReceivedBytes == 0
-            ? 0d
-            : Math.Max(0d, (totalReceived - previousReceivedBytes) / elapsedSeconds / 1024d);
-        double uploadKilobytesPerSecond = previousSentBytes == 0
-            ? 0d
-            : Math.Max(0d, (totalSent - previousSentBytes) / elapsedSeconds / 1024d);
+        double downloadKilobytesPerSecond = receivedDelta / elapsedSeconds / 1024d;
+        double uploadKilobytesPerSecond = sentDelta / elapsedSeconds / 1024d;
 
-        previousReceivedBytes = totalReceived;
-        previousSentBytes = totalSent;
+        previousAdapterBytes = adapterBytes;
         lastNetworkSampleUtc = now;
 
         string? linkSpeedText = FormatLinkSpeed(maxSpeedBps);
@@ -532,6 +586,7 @@ public sealed record HardwareReading(
     double MemoryTotalGb,
     IReadOnlyList<FanReading> Fans,
     IReadOnlyList<DiskHealth> Disks,
+    bool FpsAvailable,
     double Fps,
     double? FpsOnePercentLow,
     string? FpsApplication,

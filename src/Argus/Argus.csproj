@@ -48,7 +48,9 @@
     <ItemGroup>
       <EmbeddedResource Include="$(PresentMonPath)" LogicalName="PresentMon.exe" Condition="Exists('$(PresentMonPath)')" />
     </ItemGroup>
-    <Warning Text="PresentMon could not be downloaded; this build has no bundled PresentMon." Condition="!Exists('$(PresentMonPath)')" />
+    <!-- Release builds (GitHub Actions) must bundle PresentMon; local offline builds may continue without it. -->
+    <Error Text="PresentMon could not be downloaded; release builds must bundle it." Condition="!Exists('$(PresentMonPath)') And '$(GITHUB_ACTIONS)' == 'true'" />
+    <Warning Text="PresentMon could not be downloaded; this build has no bundled PresentMon." Condition="!Exists('$(PresentMonPath)') And '$(GITHUB_ACTIONS)' != 'true'" />
   </Target>
 
   <ItemGroup>

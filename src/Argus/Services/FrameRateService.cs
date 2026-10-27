@@ -9,12 +9,20 @@ namespace Argus.Services;
 
 public sealed class FrameRateService : IDisposable
 {
-    private const string SessionName = "ArgusTelemetry";
+    // One session name per user: --stop_existing_session cleans up a session orphaned by a crashed run,
+    // without stopping another signed-in user's Argus.
+    private static readonly string SessionName =
+        "ArgusTelemetry-" + new string(Environment.UserName.Where(char.IsAsciiLetterOrDigit).ToArray());
     private static readonly TimeSpan StartupProbeTime = TimeSpan.FromSeconds(1.5);
     private static readonly TimeSpan FpsWindow = TimeSpan.FromSeconds(1.25);
     // 1% lows need enough frames to be meaningful, so they look at a longer window than the FPS value.
     private static readonly TimeSpan OnePercentLowWindow = TimeSpan.FromSeconds(10);
     private const int MinimumFramesForOnePercentLow = 100;
+    // Apps that only draw now and then (editors, chat apps, an idle browser) are not games: below this
+    // average frame rate over the last 10 seconds, no FPS is reported.
+    private const double MinimumGameFps = 10;
+    // If PresentMon stops (or none could be started), try again after this long.
+    private static readonly TimeSpan RestartInterval = TimeSpan.FromSeconds(60);
 
     private static readonly HashSet<string> ShellProcesses = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -27,6 +35,9 @@ public sealed class FrameRateService : IDisposable
 
     private Process? process;
     private FileStream? bundledPresentMonLock;
+    private string? bundledPresentMonPath;
+    private int starting;
+    private DateTime lastStartUtc = DateTime.UtcNow;
     private readonly Dictionary<uint, string> processNames = new();
     private readonly object sync = new();
     private readonly Dictionary<string, Queue<Frame>> frameTimes = new(StringComparer.OrdinalIgnoreCase);
@@ -34,7 +45,57 @@ public sealed class FrameRateService : IDisposable
 
     public FrameRateService()
     {
-        _ = Task.Run(() => StartFirstWorkingPresentMonAsync(cancellation.Token));
+        StartPresentMon();
+    }
+
+    // False when no PresentMon is running, e.g. none could be started on this PC (FPS is then unavailable
+    // rather than "no game").
+    public bool IsMeasuring
+    {
+        get
+        {
+            lock (sync)
+            {
+                return process is { HasExited: false };
+            }
+        }
+    }
+
+    private void StartPresentMon()
+    {
+        if (Interlocked.Exchange(ref starting, 1) == 1)
+        {
+            return;
+        }
+
+        lastStartUtc = DateTime.UtcNow;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await StartFirstWorkingPresentMonAsync(cancellation.Token);
+            }
+            finally
+            {
+                Volatile.Write(ref starting, 0);
+            }
+        });
+    }
+
+    // Called on every refresh: restarts PresentMon if it has stopped since the last attempt.
+    private void RestartIfStopped()
+    {
+        bool stopped;
+        lock (sync)
+        {
+            stopped = process is null || process.HasExited;
+        }
+
+        if (stopped && !cancellation.IsCancellationRequested && DateTime.UtcNow - lastStartUtc >= RestartInterval)
+        {
+            AppLog.WarnOnce("presentmon-restart", "PresentMon is not running; trying to start it again (further restarts are not logged)");
+            StartPresentMon();
+        }
     }
 
     // Several vendors bundle PresentMon, but older 1.x builds (e.g. NVIDIA FrameView's) reject the 2.x
@@ -90,6 +151,7 @@ public sealed class FrameRateService : IDisposable
                     continue;
                 }
 
+                Process? previous;
                 lock (sync)
                 {
                     if (token.IsCancellationRequested)
@@ -98,8 +160,11 @@ public sealed class FrameRateService : IDisposable
                         return;
                     }
 
+                    previous = process;
                     process = candidate;
                 }
+
+                previous?.Dispose();
 
                 AppLog.Info($"Measuring FPS with PresentMon: {executable}");
                 return;
@@ -122,7 +187,7 @@ public sealed class FrameRateService : IDisposable
 
         if (!token.IsCancellationRequested)
         {
-            AppLog.Warn("No working PresentMon found; FPS is unavailable");
+            AppLog.WarnOnce("presentmon-none", "No working PresentMon found; FPS is unavailable");
         }
     }
 
@@ -130,6 +195,7 @@ public sealed class FrameRateService : IDisposable
     // any process would report browsers, chat apps or the desktop as "FPS" while no game is running.
     public FrameRateReading ReadFps()
     {
+        RestartIfStopped();
         string? application = UpdateForegroundApplication();
         DateTime now = DateTime.UtcNow;
         DateTime historyCutoff = now - OnePercentLowWindow;
@@ -150,7 +216,7 @@ public sealed class FrameRateService : IDisposable
             }
 
             int recentFrames = frames.Count(frame => frame.Time >= fpsCutoff);
-            if (recentFrames == 0)
+            if (recentFrames == 0 || frames.Count / OnePercentLowWindow.TotalSeconds < MinimumGameFps)
             {
                 return new FrameRateReading(0d, null, null);
             }
@@ -432,6 +498,14 @@ public sealed class FrameRateService : IDisposable
     // be swapped for another program between the check and the launch.
     private string? PrepareBundledPresentMon()
     {
+        lock (sync)
+        {
+            if (bundledPresentMonLock is not null)
+            {
+                return bundledPresentMonPath;
+            }
+        }
+
         try
         {
             using Stream? resource = typeof(FrameRateService).Assembly.GetManifestResourceStream("PresentMon.exe");
@@ -444,8 +518,12 @@ public sealed class FrameRateService : IDisposable
             resource.ReadExactly(bytes);
             byte[] expectedHash = SHA256.HashData(bytes);
 
-            string directory = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Argus", "PresentMon");
+            // An elevated Argus starts PresentMon elevated too. A user-writable folder would let any program
+            // plant DLLs that PresentMon then loads with administrator rights, so the elevated copy lives
+            // under Program Files, which only administrators can write to.
+            string directory = SystemCapabilities.IsElevated
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Argus", "PresentMon")
+                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Argus", "PresentMon");
             string path = Path.Combine(directory, $"PresentMon-{Convert.ToHexString(expectedHash, 0, 8)}.exe");
             Directory.CreateDirectory(directory);
             DeleteOtherBundledVersions(directory, path);
@@ -463,6 +541,7 @@ public sealed class FrameRateService : IDisposable
                     lock (sync)
                     {
                         bundledPresentMonLock = stream;
+                        bundledPresentMonPath = path;
                     }
 
                     return path;

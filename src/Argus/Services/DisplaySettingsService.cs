@@ -30,6 +30,8 @@ public sealed class DisplaySettingsService
             settings = new DisplaySettings();
         }
 
+        // A hand-edited file can contain "FanNames": null; the rest of the app expects a dictionary.
+        settings.FanNames ??= new Dictionary<string, string>();
         settings.StartWithWindows = appliedStartWithWindows = StartupService.IsStartupEnabled();
         return settings;
     }
@@ -58,7 +60,11 @@ public sealed class DisplaySettingsService
                 Directory.CreateDirectory(directory);
             }
 
-            File.WriteAllText(settingsPath, JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true }));
+            // Write a temporary file and swap it in, so a crash or power loss mid-write can't leave a
+            // truncated settings file behind.
+            string temporaryPath = settingsPath + ".tmp";
+            File.WriteAllText(temporaryPath, JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true }));
+            File.Move(temporaryPath, settingsPath, overwrite: true);
         }
         catch (Exception exception)
         {

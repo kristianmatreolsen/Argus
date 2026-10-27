@@ -1,8 +1,7 @@
-using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Security;
 using System.Security.Principal;
-using System.Text;
 using System.Xml.Linq;
 using Microsoft.Win32;
 
@@ -11,8 +10,13 @@ namespace Argus.Services;
 // Starts Argus at sign-in. When Argus runs as administrator it registers a Task Scheduler task with the
 // highest privileges, so it starts elevated (and can read CPU temperature and fans) without a UAC prompt.
 // Without administrator rights it can only use the per-user Run key, which always starts unelevated.
+// The task is managed through the Task Scheduler COM API (not schtasks.exe): no temporary XML file that
+// another process could swap before an elevated registration, and no console output to decode.
 public static class StartupService
 {
+    private const int TaskCreateOrUpdate = 6;
+    private const int TaskLogonInteractiveToken = 3;
+
     private const string AppName = "Argus";
     private const string TaskName = "Argus";
     private const string RunRegistryKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
@@ -26,7 +30,7 @@ public static class StartupService
             bool removed = RemoveRunKey();
             if (IsTaskRegistered())
             {
-                removed &= RunSchtasks($"/Delete /TN \"{TaskName}\" /F", out _);
+                removed &= DeleteTask();
             }
 
             return removed;
@@ -53,19 +57,27 @@ public static class StartupService
 
     private static bool IsTaskRegistered()
     {
-        if (!RunSchtasks($"/Query /TN \"{TaskName}\" /XML", out string xml))
-        {
-            return false;
-        }
-
         try
         {
+            dynamic? folder = GetRootTaskFolder();
+            if (folder is null)
+            {
+                return false;
+            }
+
+            string xml = folder.GetTask(TaskName).Xml;
             XNamespace ns = "http://schemas.microsoft.com/windows/2004/02/mit/task";
             string? command = XDocument.Parse(xml).Descendants(ns + "Command").FirstOrDefault()?.Value.Trim().Trim('"');
             return IsCurrentExecutable(command);
         }
-        catch (Exception)
+        catch (Exception exception) when (exception is FileNotFoundException or COMException or UnauthorizedAccessException)
         {
+            // No task with this name (the COM binder reports it as FileNotFoundException), or no access to it.
+            return false;
+        }
+        catch (Exception exception)
+        {
+            AppLog.WarnOnce("task-query", "Reading the Argus logon task failed", exception);
             return false;
         }
     }
@@ -123,64 +135,59 @@ public static class StartupService
             </Task>
             """;
 
-        string xmlPath = Path.Combine(Path.GetTempPath(), $"argus-task-{Guid.NewGuid():N}.xml");
         try
         {
-            File.WriteAllText(xmlPath, xml, Encoding.Unicode);
-            return RunSchtasks($"/Create /TN \"{TaskName}\" /XML \"{xmlPath}\" /F", out _);
-        }
-        catch (Exception)
-        {
-            return false;
-        }
-        finally
-        {
-            try
+            dynamic? folder = GetRootTaskFolder();
+            if (folder is null)
             {
-                File.Delete(xmlPath);
-            }
-            catch (Exception)
-            {
-            }
-        }
-    }
-
-    private static bool RunSchtasks(string arguments, out string output)
-    {
-        output = string.Empty;
-        try
-        {
-            using Process process = Process.Start(new ProcessStartInfo("schtasks.exe", arguments)
-            {
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                StandardOutputEncoding = Encoding.UTF8
-            })!;
-            output = process.StandardOutput.ReadToEnd();
-            string error = process.StandardError.ReadToEnd();
-            if (!process.WaitForExit(10_000))
-            {
-                process.Kill();
-                AppLog.Warn($"schtasks {arguments} timed out");
                 return false;
             }
 
-            // "/Query" failing just means the task does not exist; only log changes that failed.
-            if (process.ExitCode != 0 && !arguments.StartsWith("/Query", StringComparison.Ordinal))
-            {
-                AppLog.Warn($"schtasks {arguments} failed (exit code {process.ExitCode}): {error.Trim()}");
-            }
-
-            return process.ExitCode == 0;
+            folder.RegisterTask(TaskName, xml, TaskCreateOrUpdate, null, null, TaskLogonInteractiveToken, null);
+            AppLog.Info($"Registered the Argus logon task for {exePath}");
+            return true;
         }
         catch (Exception exception)
         {
-            AppLog.Warn($"Running schtasks {arguments} failed", exception);
+            AppLog.Warn("Registering the Argus logon task failed", exception);
             return false;
         }
     }
+
+    private static bool DeleteTask()
+    {
+        try
+        {
+            dynamic? folder = GetRootTaskFolder();
+            if (folder is null)
+            {
+                return false;
+            }
+
+            folder.DeleteTask(TaskName, 0);
+            AppLog.Info("Removed the Argus logon task");
+            return true;
+        }
+        catch (Exception exception)
+        {
+            AppLog.Warn("Removing the Argus logon task failed", exception);
+            return false;
+        }
+    }
+
+    private static dynamic? GetRootTaskFolder()
+    {
+        Type? schedulerType = Type.GetTypeFromProgID("Schedule.Service");
+        if (schedulerType is null)
+        {
+            return null;
+        }
+
+        dynamic scheduler = Activator.CreateInstance(schedulerType)!;
+        scheduler.Connect();
+        return scheduler.GetFolder("\\");
+    }
+
 
     private static bool IsRunKeyRegistered()
     {
